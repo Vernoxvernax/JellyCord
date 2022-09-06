@@ -42,16 +42,6 @@ struct NextupLibrary {
     Id: String,
 }
 
-
-#[derive(Serialize, Deserialize, Clone)]
-struct CoolMessage {
-    username: String,
-    avatar_url: String,
-    content: String,
-    embeds: Vec<Value>
-}
-
-
 #[group]
 #[commands(ping, help, init, dump, pause, unpause)]
 struct General;

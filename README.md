@@ -10,8 +10,11 @@ don't use it
 
 currently only jellyfin
 
+you also need:
+    * sqlx
 
 ```
+sqlx database setup
 echo "discord_token: <DISCORD_TOKEN>" >> jellycord.yaml
 cargo run
 ```

@@ -1,0 +1,119 @@
+{
+  "db": "SQLite",
+  "6811a63fa6d7a87c08d662a9d376b31046818412f97528e54a23e2678cedcb7f": {
+    "describe": {
+      "columns": [
+        {
+          "name": "Domain",
+          "ordinal": 0,
+          "type_info": "Text"
+        }
+      ],
+      "nullable": [
+        false
+      ],
+      "parameters": {
+        "Right": 1
+      }
+    },
+    "query": "SELECT Domain FROM FRONT WHERE Domain=?"
+  },
+  "a263d47925226b9532212d64063a7fb34e8b9d6ea965605a1a57bc7397ac2713": {
+    "describe": {
+      "columns": [
+        {
+          "name": "Active_Channel",
+          "ordinal": 0,
+          "type_info": "Int64"
+        },
+        {
+          "name": "Channel_ID",
+          "ordinal": 1,
+          "type_info": "Int64"
+        },
+        {
+          "name": "Domain",
+          "ordinal": 2,
+          "type_info": "Text"
+        },
+        {
+          "name": "Token",
+          "ordinal": 3,
+          "type_info": "Text"
+        },
+        {
+          "name": "UserID",
+          "ordinal": 4,
+          "type_info": "Text"
+        },
+        {
+          "name": "TRC",
+          "ordinal": 5,
+          "type_info": "Int64"
+        }
+      ],
+      "nullable": [
+        true,
+        true,
+        false,
+        false,
+        false,
+        true
+      ],
+      "parameters": {
+        "Right": 0
+      }
+    },
+    "query": "SELECT * FROM FRONT WHERE Active_Channel = 1"
+  },
+  "c882be72c05c84d252da6aa426ceac54f9ff37392fc71bb06f12a8305aa01212": {
+    "describe": {
+      "columns": [],
+      "nullable": [],
+      "parameters": {
+        "Right": 1
+      }
+    },
+    "query": "DELETE FROM FRONT WHERE Channel_ID=?"
+  },
+  "c923d0e2a59765de57713f60ebc03012f0471ec90beef071590603c2be0cec10": {
+    "describe": {
+      "columns": [],
+      "nullable": [],
+      "parameters": {
+        "Right": 2
+      }
+    },
+    "query": "UPDATE FRONT SET TRC = ? WHERE UserID=?"
+  },
+  "db6cdf048386504559b8cf95c130ad02a8d68b7ab1a0d4864c5c7d71443cd348": {
+    "describe": {
+      "columns": [],
+      "nullable": [],
+      "parameters": {
+        "Right": 1
+      }
+    },
+    "query": "UPDATE FRONT SET Active_Channel = 1 WHERE Channel_ID=?"
+  },
+  "e82a12e0ed7629ac579ef4e59901074f4c91e5e5b401808e1d4b4b8dc32085ce": {
+    "describe": {
+      "columns": [],
+      "nullable": [],
+      "parameters": {
+        "Right": 1
+      }
+    },
+    "query": "UPDATE FRONT SET Active_Channel = 0 WHERE Channel_ID=?"
+  },
+  "ef16134f9bddc1936a151910201e2b5a855e727ecfbbd61e4259226b0919733f": {
+    "describe": {
+      "columns": [],
+      "nullable": [],
+      "parameters": {
+        "Right": 6
+      }
+    },
+    "query": "INSERT INTO FRONT (Active_Channel, Channel_ID, Domain, Token, UserID, TRC) VALUES (?1, ?2, ?3, ?4, ?5, ?6)"
+  }
+}

@@ -4,17 +4,13 @@ ___
 
 ### here is my replacement.
 
-
+**Delete your database for this new release**
 
 don't use it
 
 currently only jellyfin
 
-you also need:
-    * sqlx
-
 ```
-sqlx database setup
 echo "discord_token: <DISCORD_TOKEN>" >> jellycord.yaml
 cargo run
 ```
@@ -22,6 +18,10 @@ cargo run
 
 **HOST YOURSELF!!!**
 
+
+Changelog:
+
+* now actually working and watching each library id
 
 
 ##### now I hate async even more

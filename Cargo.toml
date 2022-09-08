@@ -16,3 +16,4 @@ serenity = { version = "0.11.5", features = ["collector", "rustls_backend"] }
 tokio = { version = "1.21.0", features = ["rt-multi-thread", "macros"] }
 toml = "0.5.9"
 sqlx = { version = "0.5.7", features = ["runtime-tokio-rustls", "sqlite", "offline"] }
+chrono = "0.4.22"

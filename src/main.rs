@@ -1,17 +1,17 @@
 use config::{Config, File};
 use sqlx::sqlite::SqliteRow;
-use sqlx::{Pool, Sqlite, Row};
-use sqlx::types::*;
+use sqlx::Row;
+use std::process::exit;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::path::Path;
 use http::StatusCode;
+use std::env;
 use isahc::Request;
 use chrono;
 use isahc::prelude::*;
 use serde_derive::{Serialize, Deserialize};
 use serenity::async_trait;
 use std::time::Duration;
-use serenity::json::Value;
 use serenity::model::id::{ChannelId, GuildId};
 use serenity::prelude::*;
 use serenity::model::channel::Message;
@@ -152,7 +152,9 @@ async fn main() {
         .expect("Couldn't connect to database");
     sqlx::migrate!("./migrations").run(&database).await.expect("Couldn't run database migrations");
     database.close().await;
-
+    if env::var("SETUP") == Ok("1".to_string()) {
+        exit(0x100);
+    };
     let settings_file_raw = Config::builder().add_source(File::from(Path::new(&"./jellycord.yaml".to_string()))).build().unwrap();
     let serialized = settings_file_raw.try_deserialize::<ConfigFile>().expect("Reading config file.");
     let framework = StandardFramework::new()

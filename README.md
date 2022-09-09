@@ -1,18 +1,34 @@
-## **RIP @DmDb**
-
-___
-
-### here is my replacement.
-
-**Delete your database for this new release**
-
-don't use it
-
-currently only jellyfin
+Currently only jellyfin
 
 ```
 echo "discord_token: <DISCORD_TOKEN>" > jellycord.yaml
-cargo run
+cargo run --release
+```
+
+For docker deployment:
+
+```
+git clone ..., cd ...
+sudo docker build -t jellycord .
+```
+
+`docker-compose.yml`
+```
+version: '3.7'
+services:
+  jellycord:
+    image: jellycord
+    container_name: "JellyCord"
+    volumes:
+      - ./data:/data
+    environment:
+      - UID=1000
+      - GID=1000
+```
+
+```
+sudo docker-compose up
+...
 ```
 
 

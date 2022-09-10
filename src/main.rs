@@ -1,3 +1,4 @@
+#![allow(non_snake_case)]
 use config::{Config, File};
 use sqlx::sqlite::SqliteRow;
 use sqlx::Row;
@@ -19,19 +20,21 @@ use serenity::model::prelude::*;
 use serenity::framework::standard::macros::{command, group};
 use serenity::framework::standard::{StandardFramework, CommandResult};
 
+
 #[derive(Deserialize)]
-pub struct ConfigFile {
-    pub discord_token: String,
+struct ConfigFile {
+    discord_token: String,
+    command_prefix: Option<char>
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 struct Instance {
-    Active_Channel: u8,
-    Channel_ID: u64,
-    Domain: String,
-    Token: String,
-    UserID: String,
-    TRC: i64
+    active_channel: u8,
+    channel_id: u64,
+    domain: String,
+    token: String,
+    user_id: String,
+    trc: i64
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -46,16 +49,10 @@ struct MediaResponse {
     TotalRecordCount: i64
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 struct Library {
     Name: String,
     Id: String
-}
-
-
-#[derive(serde::Serialize, sqlx::FromRow, Deserialize, Debug, Clone)]
-struct LibraryItem {
-    b4e66a8b5c46f4b0f22a055f24aa: String
 }
 
 #[group]
@@ -66,6 +63,7 @@ struct Handler {
     is_loop_running: AtomicBool,
 }
 
+
 #[async_trait]
 impl EventHandler for Handler {
     async fn ready(&self, ctx: Context, ready: Ready) {
@@ -75,6 +73,7 @@ impl EventHandler for Handler {
     
     async fn cache_ready(&self, ctx: Context, _guilds: Vec<GuildId>) {
         println!("Cache built successfully!");
+        // loop {};
         if !self.is_loop_running.load(Ordering::Relaxed) {
             tokio::spawn(async move {
                 loop {
@@ -90,10 +89,36 @@ impl EventHandler for Handler {
                     let db = sqlx::query!("SELECT * FROM FRONT WHERE Active_Channel = 1")
                     .fetch_all(&database).await;
                     for server in db.unwrap() {
-                        let serialized = get_page(format!("{}/Users/{}/Items?api_key={}&Recursive=true&IncludeItemTypes=Movie,Series", server.Domain, server.UserID, server.Token)).unwrap();
-                        if serialized.TotalRecordCount != server.TRC.unwrap() {
+                        let timed_response = get_page(format!("{}/Users/{}/Items?api_key={}&Recursive=true&IncludeItemTypes=Movie,Series", server.Domain, server.UserID, server.Token)).unwrap();
+                        let serialized = match timed_response {
+                            Ok(ok) => {
+                                ok
+                            },
+                            Err(err) => {
+                                let error_message = ChannelId(server.Channel_ID.unwrap() as u64)
+                                        .send_message(&ctx, |m| {
+                                            m.content(format!("Your mediaserver could not be reached. Error: {}\nIf you believe that the error has been fixed, you can reactivate this channel by typing \"~unpause\".", err))
+                                }).await;
+                                match error_message {
+                                    Ok(_) => {
+                                        sqlx::query!(
+                                            "UPDATE FRONT SET Active_Channel = 0 WHERE UserID=?",
+                                            server.UserID).execute(&database)
+                                            .await.expect("pause error");
+                                    },
+                                    Err(_) => {
+                                        sqlx::query!(
+                                            "DELETE FROM FRONT WHERE UserID=?",
+                                            server.UserID).execute(&database)
+                                        .await.expect("dump error");
+                                    }
+                                };
+                                continue
+                            }
+                        };
+                        if serialized.TotalRecordCount == server.TRC.unwrap() {
                             println!("New items found!");
-                            let db_fetch: Vec<Result<String, sqlx::Error>> = sqlx::query(format!("SELECT {} FROM LIBRARY", &server.UserID.as_str()[2..server.UserID.len() - 2]).as_str())
+                            let db_fetch: Vec<Result<String, sqlx::Error>> = sqlx::query(format!("SELECT {:?} FROM LIBRARY", &server.UserID).as_str())
                             .map(|row: SqliteRow| row.try_get(0))
                             .fetch_all(&database).await.expect("Failed while searching database.");
                             let mut db_string = String::new();
@@ -121,7 +146,7 @@ impl EventHandler for Handler {
                                     if let Err(why) = res {
                                         eprintln!("Error sending message: {:?}", why);
                                     };
-                                    sqlx::query(format!("INSERT INTO LIBRARY ({}) VALUES(\"{}\")", &server.UserID[2..server.UserID.len() - 2], &x.Id).as_str()).execute(&database)
+                                    sqlx::query(format!("INSERT INTO LIBRARY ({:?}) VALUES (\"{}\")", &server.UserID, &x.Id).as_str()).execute(&database)
                                     .await.expect("insert error");
                                 };
                                 let new_trc = serialized.TotalRecordCount + new_items.len() as i64;
@@ -137,6 +162,7 @@ impl EventHandler for Handler {
         }
     }
 }
+
 
 #[tokio::main]
 async fn main() {
@@ -158,13 +184,12 @@ async fn main() {
     let settings_file_raw = Config::builder().add_source(File::from(Path::new(&"./jellycord.yaml".to_string()))).build().unwrap();
     let serialized = settings_file_raw.try_deserialize::<ConfigFile>().expect("Reading config file.");
     let framework = StandardFramework::new()
-        .configure(|c| c.prefix("~")) 
+        .configure(|c| c.prefix(serialized.command_prefix.unwrap_or('~'))) 
         .group(&GENERAL_GROUP);
         let intents = GatewayIntents::non_privileged() | GatewayIntents::MESSAGE_CONTENT;
         let mut client = Client::builder(serialized.discord_token, intents)
         .event_handler(Handler {
             is_loop_running: AtomicBool::new(false),
-            // database
         })
         .framework(framework)
         .await
@@ -173,6 +198,7 @@ async fn main() {
         println!("An error occurred while running the client: {:?}", why);
     }
 }
+
 
 #[command]
 async fn help(ctx: &Context, msg: &Message) -> CommandResult {
@@ -190,10 +216,12 @@ Commands:
     Ok(())
 }
 
+
 #[command]
 async fn init(ctx: &Context, msg: &Message) -> CommandResult {
+    let channel_id = msg.channel_id.0 as i64;
     let thread = msg.channel_id.create_public_thread(ctx, msg.id, |t| t.name("JellyCord - Initialize")).await?;
-    thread.say(ctx, "Please enter your jellyfin address.\nYou can stop this process by typing \"quit\"").await?;
+    thread.say(ctx, "Please enter your jellyfin/emby address.\nYou can stop this process by typing \"quit\" right now.").await?;
     loop {
         let user_reply = msg.author.await_reply(&ctx).await.unwrap();
         let database = sqlx::sqlite::SqlitePoolOptions::new()
@@ -214,64 +242,100 @@ async fn init(ctx: &Context, msg: &Message) -> CommandResult {
             } else {
                 &user_reply.content
             };
-            if sqlx::query!(
-                "SELECT Domain FROM FRONT WHERE Domain=?",
-                end
-            ).fetch_one(&database).await.is_ok() {
-                msg.reply(&ctx, "This jellyfin server has already been added.\nUse \"dump\" to recreate a connection.").await.unwrap();
-                break
-            } else {
-                Ok(end.to_string())
-            }
+            Ok(end.to_string())
         };
         let domain = domain.unwrap();
-        user_reply.reply(&ctx, "Please create an api token and enter it here.").await?;
+        let api_question = user_reply.reply(&ctx, "Please create an api token and enter it here.").await?;
         let api_token = &msg.author.await_reply(&ctx).await.unwrap();
         api_token.delete(&ctx).await?;
-        thread.say(&ctx, "Received the token.\nNow enter the username which you would like to receive the notifications from.").await?;
-        let requ = reqwest::get(format!("{}/Users?api_key={}", &domain, &api_token.content)).await?;
-        let serialized: Vec<MinimalList> = serde_json::from_str(&requ.text().await.unwrap()).unwrap();
+        api_question.delete(&ctx).await?;
+        let users_request = Request::get(format!("{}/Users?api_key={}", &domain, &api_token.content)).body(());
+        let users_response: Result<http::Response<_>, isahc::Error> = match users_request {
+            Ok(response) => {
+                response.send()
+            },
+            Err(_) => {
+                thread.say(&ctx, format!("The URL you've entered, seems to be of invalid format?\n- \"https://emby.yourdomain.com\"").as_str()).await?;
+                thread.say(ctx, "Please try again by entering your jellyfin/emby address.").await?;
+                continue
+            }
+        };
+        let users: Result<Vec<MinimalList>, String> = match users_response {
+            Ok(mut ok) => {
+                let serde_attempt = serde_json::from_str::<Vec<MinimalList>>(&ok.text().unwrap());
+                match serde_attempt {
+                    Ok(ok) => Ok(ok),
+                    Err(_) => {
+                        thread.say(&ctx, format!("The request to retrieve available users failed.\nThis is likely due to an incorrect response. Is this really a supported mediaserver?").as_str()).await?;
+                        thread.say(ctx, "Please try again by entering your jellyfin/emby address.").await?;
+                        continue
+                    }
+                }
+            },
+            Err(err) => {
+                thread.say(&ctx, format!("The request to retrieve available users failed. Try to add \"https://\"\nError: {}", err).as_str()).await?;
+                thread.say(ctx, "Please try again by entering your jellyfin/emby address.").await?;
+                continue
+            }
+        };
+        thread.say(&ctx, "Received the token.\nNow enter the username which you would like to receive the notifications for.").await?;
         loop {
             let username = &msg.author.await_reply(&ctx).await.unwrap().content;
-            let mut user_id: Option<String> = None;
-            for user in serialized.clone().into_iter() {
+            let mut user_id_raw: Option<String> = None;
+            for user in users.as_ref().unwrap().clone().into_iter() {
                 if user.Name.to_lowercase() == username.to_lowercase().trim() {
-                    user_id = Some(user.Id)
+                    user_id_raw = Some(user.Id)
                 }
             };
-            if user_id.is_none() {
+            if user_id_raw.is_none() {
                 thread.say(&ctx, "Username could not be found, please enter a different one.").await?;
             } else {
+                let user_id = user_id_raw.clone().unwrap();
+                if sqlx::query!(
+                    "SELECT UserID FROM FRONT WHERE UserID=? AND Channel_ID=?",
+                    user_id, channel_id,
+                ).fetch_one(&database).await.is_ok() {
+                    msg.reply(&ctx, "This UserID has already been added.\nUse \"dump\" to recreate a connection.").await.unwrap();
+                    break
+                };
                 thread.say(&ctx, "Username has been found and added to the configuration.").await?;
-                let requ = reqwest::get(format!("{}/Users/{}/Items?api_key={}&Recursive=true&IncludeItemTypes=Movie,Series", &domain, &user_id.as_ref().unwrap(), &api_token.content)).await?;
-                let serialized: MediaResponse = serde_json::from_str(&requ.text().await.unwrap()).unwrap();
-                if sqlx::query(format!("SELECT {} FROM LIBRARY", &user_id.as_ref().unwrap()[2..user_id.as_ref().unwrap().len() - 2]).as_str()).fetch_one(&database).await.is_ok() {
-                    dbg!(format!("ALTER TABLE LIBRARY RENAME COLUMN {} TO {}_{}", &user_id.as_ref().unwrap()[2..user_id.as_ref().unwrap().len() - 2], &user_id.as_ref().unwrap()[2..user_id.as_ref().unwrap().len() - 2], chrono::offset::Utc::now().timestamp()));
-                    sqlx::query(format!("ALTER TABLE LIBRARY RENAME COLUMN {} TO {}_{}", &user_id.as_ref().unwrap()[2..user_id.as_ref().unwrap().len() - 2], &user_id.as_ref().unwrap()[2..user_id.as_ref().unwrap().len() - 2], chrono::offset::Utc::now().timestamp()).as_str()).execute(&database).await.expect("couldn't rename database");
+                let timed_response = get_page(format!("{}/Users/{}/Items?api_key={}&Recursive=true&IncludeItemTypes=Movie,Series", &domain, &user_id_raw.unwrap(), &api_token.content));
+                let serialized = match timed_response {
+                    Ok(ok) => {
+                        ok.unwrap()
+                    },
+                    Err(_) => {
+                        continue
+                    }
+                };
+                if sqlx::query(format!("SELECT {} FROM LIBRARY", &user_id).as_str()).fetch_one(&database).await.is_ok() {
+                    sqlx::query(format!("ALTER TABLE LIBRARY RENAME COLUMN {:?} TO \"{}_{}\"", &user_id, &user_id, chrono::offset::Utc::now().timestamp()).as_str()).execute(&database).await.expect("couldn't rename database");
                 };
                 sqlx::query(
-                    format!("ALTER TABLE LIBRARY ADD {} VARCHAR(30)", &user_id.as_ref().unwrap()[2..user_id.as_ref().unwrap().len() - 2]).as_str()).execute(&database)
-                    .await.expect("insert error");
+                    format!("ALTER TABLE LIBRARY ADD {:?} VARCHAR(30)", &user_id).as_str()).execute(&database)
+                .await.expect("insert error");
                 let mut id_as_value: String = String::new();
-                for item in serialized.Items {
-                    id_as_value.push_str(format!("(\"{}\"),", item.Id).as_str());
+                for item in serialized.clone().Items {
+                    if &item == serialized.Items.last().unwrap() {
+                        id_as_value.push_str(format!("(\"{}\")", item.Id).as_str());
+                    } else {
+                        id_as_value.push_str(format!("(\"{}\"),", item.Id).as_str());
+                    }
                 };
-                id_as_value.pop();
-                sqlx::query(
-                    format!("INSERT INTO LIBRARY ({}) VALUES {}", &user_id.as_ref().unwrap()[2..user_id.as_ref().unwrap().len() - 2], &id_as_value).as_str()).execute(&database)
-                    .await.expect("insert error");
+                sqlx::query(format!("INSERT INTO LIBRARY ({:?}) VALUES {}", &user_id, &id_as_value).as_str()).execute(&database)
+                .await.expect("insert error");
                 let add = Instance {
-                    Active_Channel: 1,
-                    Channel_ID: msg.channel_id.0,
-                    Domain: domain,
-                    Token: api_token.content.clone(),
-                    UserID: user_id.unwrap(),
-                    TRC: serialized.TotalRecordCount.clone()
+                    active_channel: 1,
+                    channel_id: channel_id as u64,
+                    domain,
+                    token: api_token.content.clone(),
+                    user_id: user_id.to_string(),
+                    trc: serialized.TotalRecordCount.clone()
                 };
-                let channel_id = add.Channel_ID as i64; 
+                let channel_id = add.channel_id as i64;
                 sqlx::query!(
                     "INSERT INTO FRONT (Active_Channel, Channel_ID, Domain, Token, UserID, TRC) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                    add.Active_Channel, channel_id, add.Domain, add.Token, add.UserID, add.TRC).execute(&database)
+                    add.active_channel, channel_id, add.domain, add.token, add.user_id, add.trc).execute(&database)
                     .await.expect("insert error");
                 break
             }
@@ -357,19 +421,20 @@ async fn ping(ctx: &Context, msg: &Message) -> CommandResult {
 }
 
 
-
-fn get_page(url: String) -> Result<MediaResponse, isahc::Error> {
+fn get_page(url: String) -> Result<Result<MediaResponse, String>, isahc::Error> {
     let mut response = Request::get(url).timeout(Duration::from_secs(10))
     .header("Content-Type", "application/json")
     .body(())?.send()?;
     let result = match response.status() {
         StatusCode::OK => {
             let fdsfd: MediaResponse = serde_json::from_str(&response.text().unwrap()).unwrap();
-            fdsfd
+            Ok(fdsfd)
+        },
+        _ => {
+            Err(response.status().to_string())
         }
-        _ => panic!("{} your server is missing some api Domains, i think", response.status())
     };
     Ok(
-        result
+    result
     )
 }

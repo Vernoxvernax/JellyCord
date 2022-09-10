@@ -1,15 +1,21 @@
-Currently only jellyfin
+## JellyCord
+
+**Jellyfin and Emby supported**
+
+___
+### Binary-run:
 
 ```
 echo "discord_token: <DISCORD_TOKEN>" > jellycord.yaml
 cargo run --release
 ```
+___
 
-For docker deployment:
+### Docker deployment:
 
 ```
-git clone ..., cd ...
-sudo docker build -t jellycord .
+git clone <git-url>
+sudo docker build -t jellycord <git-dir>
 ```
 
 `docker-compose.yml`
@@ -27,20 +33,19 @@ services:
 ```
 
 ```
-sudo docker-compose up
-...
+sudo docker-compose up -d
 ```
+___
+
+### NOTES:
+
+* Make sure to edit the config file.
+* The default command prefix is '~'
+
+___
+
+[**Changelog**](https://github.com/Vernoxvernax/JellyCord/blob/main/Changelog.md)
 
 
-**HOST YOURSELF!!!**
-
-
-Changelog:
-
-* added env variable "SETUP" (checking for "1"). Which will result in only the database being created.
-* added basic Dockerfile and entrypoint.sh
-
-This makes it possible to run it in a docker and chown the file for non-root access.
-
-
-##### now I hate async even more
+Warning:
+I highly encourage you host this yourself. Anyone with the sqlite database can access your media with admin like permissions.

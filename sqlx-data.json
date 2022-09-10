@@ -1,10 +1,10 @@
 {
   "db": "SQLite",
-  "6811a63fa6d7a87c08d662a9d376b31046818412f97528e54a23e2678cedcb7f": {
+  "42faf2e32d7cb2bd58d4fd24dca75c29bd7ed1c7a57528b8553fdd11e696c428": {
     "describe": {
       "columns": [
         {
-          "name": "Domain",
+          "name": "UserID",
           "ordinal": 0,
           "type_info": "Text"
         }
@@ -13,10 +13,20 @@
         false
       ],
       "parameters": {
+        "Right": 2
+      }
+    },
+    "query": "SELECT UserID FROM FRONT WHERE UserID=? AND Channel_ID=?"
+  },
+  "46daa46f286fddb8a4277d03ef29b809d31d5070d8f6cbc7a3d470eec12ebdb6": {
+    "describe": {
+      "columns": [],
+      "nullable": [],
+      "parameters": {
         "Right": 1
       }
     },
-    "query": "SELECT Domain FROM FRONT WHERE Domain=?"
+    "query": "DELETE FROM FRONT WHERE UserID=?"
   },
   "a263d47925226b9532212d64063a7fb34e8b9d6ea965605a1a57bc7397ac2713": {
     "describe": {
@@ -65,6 +75,16 @@
       }
     },
     "query": "SELECT * FROM FRONT WHERE Active_Channel = 1"
+  },
+  "b1403a16137c61f30c6a2fa38ea17508bb2eb865d3b03baddd485a10145440b5": {
+    "describe": {
+      "columns": [],
+      "nullable": [],
+      "parameters": {
+        "Right": 1
+      }
+    },
+    "query": "UPDATE FRONT SET Active_Channel = 0 WHERE UserID=?"
   },
   "c882be72c05c84d252da6aa426ceac54f9ff37392fc71bb06f12a8305aa01212": {
     "describe": {

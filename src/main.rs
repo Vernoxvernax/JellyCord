@@ -116,7 +116,7 @@ impl EventHandler for Handler {
                                 continue
                             }
                         };
-                        if serialized.TotalRecordCount == server.TRC.unwrap() {
+                        if serialized.TotalRecordCount != server.TRC.unwrap() {
                             println!("New items found!");
                             let db_fetch: Vec<Result<String, sqlx::Error>> = sqlx::query(format!("SELECT {:?} FROM LIBRARY", &server.UserID).as_str())
                             .map(|row: SqliteRow| row.try_get(0))

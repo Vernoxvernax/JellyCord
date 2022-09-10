@@ -1,13 +1,12 @@
 [package]
 name = "jellycord"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 
 [dependencies]
 config = "0.13.2"
 http = "0.2.8"
 isahc = "1.7.2"
-regex = "1.6.0"
 reqwest = "0.11.11"
 serde = "1.0.144"
 serde_derive = "1.0.144"

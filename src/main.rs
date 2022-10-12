@@ -89,15 +89,15 @@ impl EventHandler for Handler {
                     let db = sqlx::query!("SELECT * FROM FRONT WHERE Active_Channel = 1")
                     .fetch_all(&database).await;
                     for server in db.unwrap() {
-                        let timed_response = get_page(format!("{}/Users/{}/Items?api_key={}&Recursive=true&IncludeItemTypes=Movie,Series", server.Domain, server.UserID, server.Token)).unwrap();
-                        let serialized = match timed_response {
-                            Ok(ok) => {
-                                ok
-                            },
-                            Err(err) => {
+                        let timed_response_obj = get_page(format!("{}/Users/{}/Items?api_key={}&Recursive=true&IncludeItemTypes=Movie,Series", server.Domain, server.UserID, server.Token));
+                        if timed_response_obj.is_err() {
+                            eprintln!("Failed to connect to the server.");
+                            continue
+                        } else {
+                            if timed_response_obj.is_err() {
                                 let error_message = ChannelId(server.Channel_ID.unwrap() as u64)
                                         .send_message(&ctx, |m| {
-                                            m.content(format!("Your mediaserver could not be reached. Error: {}\nIf you believe that the error has been fixed, you can reactivate this channel by typing \"~unpause\".", err))
+                                            m.content(format!("Your mediaserver could not be reached. If you believe that the error has been fixed, you can reactivate this channel by typing \"~unpause\"."))
                                 }).await;
                                 match error_message {
                                     Ok(_) => {
@@ -114,43 +114,43 @@ impl EventHandler for Handler {
                                     }
                                 };
                                 continue
-                            }
-                        };
-                        if serialized.TotalRecordCount != server.TRC.unwrap() {
-                            println!("New items found!");
-                            let db_fetch: Vec<Result<String, sqlx::Error>> = sqlx::query(format!("SELECT {:?} FROM LIBRARY", &server.UserID).as_str())
-                            .map(|row: SqliteRow| row.try_get(0))
-                            .fetch_all(&database).await.expect("Failed while searching database.");
-                            let mut db_string = String::new();
-                            for items in db_fetch {
-                                db_string.push_str(&(items.unwrap() + " "));
                             };
-                            let mut new_items: Vec<Library> = [].to_vec();
-                            for item in serialized.Items {
-                                if ! db_string.contains(&item.Id) {
-                                    new_items.append(&mut [item].to_vec());
-                                }
-                            };
-                            if new_items.is_empty() {
-                                continue
-                            } else {
-                                for x in new_items.clone() {
-                                    let image = format!("{}/Items/{}/Images/Primary?api_key={}&Quality=100", server.Domain, x.Id, server.Token);
-                                    let res = ChannelId(server.Channel_ID.unwrap() as u64)
-                                        .send_message(&ctx, |m| {
-                                            m.embed(|e| {
-                                                e.title(x.Name)
-                                                .image(image)
-                                        })
-                                    }).await;
-                                    if let Err(why) = res {
-                                        eprintln!("Error sending message: {:?}", why);
-                                    };
-                                    sqlx::query(format!("INSERT INTO LIBRARY ({:?}) VALUES (\"{}\")", &server.UserID, &x.Id).as_str()).execute(&database)
-                                    .await.expect("insert error");
+                            let serialized = timed_response_obj.unwrap();
+                            if serialized.TotalRecordCount != server.TRC.unwrap() {
+                                println!("New items found!");
+                                let db_fetch: Vec<Result<String, sqlx::Error>> = sqlx::query(format!("SELECT {:?} FROM LIBRARY", &server.UserID).as_str())
+                                .map(|row: SqliteRow| row.try_get(0))
+                                .fetch_all(&database).await.expect("Failed while searching database.");
+                                let mut db_string = String::new();
+                                for items in db_fetch {
+                                    db_string.push_str(&(items.unwrap() + " "));
                                 };
-                                let new_trc = serialized.TotalRecordCount + new_items.len() as i64;
-                                sqlx::query!("UPDATE FRONT SET TRC = ? WHERE UserID=?", new_trc, server.UserID).execute(&database).await.expect("Couldn't update database.");
+                                let mut new_items: Vec<Library> = [].to_vec();
+                                for item in serialized.Items {
+                                    if ! db_string.contains(&item.Id) {
+                                        new_items.append(&mut [item].to_vec());
+                                    }
+                                };
+                                if new_items.is_empty() {
+                                    continue
+                                } else {
+                                    for x in new_items.clone() {
+                                        let image = format!("{}/Items/{}/Images/Primary?api_key={}&Quality=100", server.Domain, x.Id, server.Token);
+                                        let res = ChannelId(server.Channel_ID.unwrap() as u64)
+                                            .send_message(&ctx, |m| {
+                                                m.embed(|e| {
+                                                    e.title(x.Name)
+                                                    .image(image)
+                                            })
+                                        }).await;
+                                        if let Err(why) = res {
+                                            eprintln!("Error sending message: {:?}", why);
+                                        };
+                                        sqlx::query(format!("INSERT INTO LIBRARY ({:?}) VALUES (\"{}\")", &server.UserID, &x.Id).as_str()).execute(&database)
+                                        .await.expect("insert error");
+                                    };
+                                    sqlx::query!("UPDATE FRONT SET TRC = ? WHERE UserID=?", serialized.TotalRecordCount, server.UserID).execute(&database).await.expect("Couldn't update database.");
+                                }
                             }
                         }
                     };
@@ -302,7 +302,7 @@ async fn init(ctx: &Context, msg: &Message) -> CommandResult {
                 let timed_response = get_page(format!("{}/Users/{}/Items?api_key={}&Recursive=true&IncludeItemTypes=Movie,Series", &domain, &user_id_raw.unwrap(), &api_token.content));
                 let serialized = match timed_response {
                     Ok(ok) => {
-                        ok.unwrap()
+                        ok
                     },
                     Err(_) => {
                         continue
@@ -421,10 +421,10 @@ async fn ping(ctx: &Context, msg: &Message) -> CommandResult {
 }
 
 
-fn get_page(url: String) -> Result<Result<MediaResponse, String>, isahc::Error> {
+fn get_page(url: String) -> Result<MediaResponse, error::Error> {
     let mut response = Request::get(url).timeout(Duration::from_secs(10))
     .header("Content-Type", "application/json")
-    .body(())?.send()?;
+    .body(()).expect("Failed to create request.").send().expect("Sending request");
     let result = match response.status() {
         StatusCode::OK => {
             let fdsfd: MediaResponse = serde_json::from_str(&response.text().unwrap()).unwrap();
@@ -435,6 +435,6 @@ fn get_page(url: String) -> Result<Result<MediaResponse, String>, isahc::Error> 
         }
     };
     Ok(
-    result
+    result.unwrap()
     )
 }

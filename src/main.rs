@@ -131,9 +131,7 @@ impl EventHandler for Handler {
                                         new_items.append(&mut [item].to_vec());
                                     }
                                 };
-                                if new_items.is_empty() {
-                                    continue
-                                } else {
+                                if ! new_items.is_empty() {
                                     for x in new_items.clone() {
                                         let image = format!("{}/Items/{}/Images/Primary?api_key={}&Quality=100", server.Domain, x.Id, server.Token);
                                         let res = ChannelId(server.Channel_ID.unwrap() as u64)
@@ -149,8 +147,8 @@ impl EventHandler for Handler {
                                         sqlx::query(format!("INSERT INTO LIBRARY ({:?}) VALUES (\"{}\")", &server.UserID, &x.Id).as_str()).execute(&database)
                                         .await.expect("insert error");
                                     };
-                                    sqlx::query!("UPDATE FRONT SET TRC = ? WHERE UserID=?", serialized.TotalRecordCount, server.UserID).execute(&database).await.expect("Couldn't update database.");
                                 }
+                                sqlx::query!("UPDATE FRONT SET TRC = ? WHERE UserID=?", serialized.TotalRecordCount, server.UserID).execute(&database).await.expect("Couldn't update database.");
                             }
                         }
                     };
@@ -421,10 +419,14 @@ async fn ping(ctx: &Context, msg: &Message) -> CommandResult {
 }
 
 
-fn get_page(url: String) -> Result<MediaResponse, error::Error> {
-    let mut response = Request::get(url).timeout(Duration::from_secs(10))
+fn get_page(url: String) -> Result<MediaResponse, ()> {
+    let sending_request = Request::get(url).timeout(Duration::from_secs(10))
     .header("Content-Type", "application/json")
-    .body(()).expect("Failed to create request.").send().expect("Sending request");
+    .body(()).expect("Failed to create request.").send();
+    if sending_request.is_err() {
+        return Err(());
+    }
+    let mut response = sending_request.unwrap();
     let result = match response.status() {
         StatusCode::OK => {
             let fdsfd: MediaResponse = serde_json::from_str(&response.text().unwrap()).unwrap();
@@ -434,6 +436,9 @@ fn get_page(url: String) -> Result<MediaResponse, error::Error> {
             Err(response.status().to_string())
         }
     };
+    if result.is_err() {
+        return Err(());
+    }
     Ok(
     result.unwrap()
     )

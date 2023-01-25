@@ -7,10 +7,13 @@ if [ ! -f /data/jellycord.yaml ]; then
 	chown -R $UID:$GID /data
 else
 	cd /data 
+
+	# this step is necessary so that the permissions for the db can be changed before running jellycord
 	if [ ! -f /data/jellycord.sqlite ]; then
 		echo "Creating database..."
 		SETUP=1 /usr/local/cargo/bin/jellycord
 	fi
+
 	chown -R $UID:$GID /data
 	/usr/local/cargo/bin/jellycord
 fi

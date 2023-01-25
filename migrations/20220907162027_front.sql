@@ -1,9 +1,8 @@
 -- Add migration script here
 CREATE TABLE FRONT (
-    Active_Channel INTEGER,
-    Channel_ID INTEGER,
+    Active_Channel INTEGER NOT NULL,
+    Channel_ID INTEGER NOT NULL,
     Domain TEXT NOT NULL,
     Token TEXT NOT NULL,
-    UserID TEXT NOT NULL,
-    TRC INTEGER
+    UserID TEXT NOT NULL
 )

@@ -1,14 +1,7 @@
 ## JellyCord
 
-**Jellyfin and Emby supported**
+**supports Jellyfin and Emby**
 
-___
-### Binary-run:
-
-```
-echo "discord_token: <DISCORD_TOKEN>" > jellycord.yaml
-cargo run --release
-```
 ___
 
 ### Docker deployment:
@@ -19,7 +12,7 @@ sudo docker build -t jellycord <git-dir>
 ```
 
 `docker-compose.yml`
-```
+```yml
 version: '3.7'
 services:
   jellycord:
@@ -37,15 +30,24 @@ sudo docker-compose up -d
 ```
 ___
 
+### Example:
+
+<img src="https://i.imgur.com/wcrIerK.png" height="500"/>
+
+___
 ### NOTES:
 
 * Make sure to edit the config file.
 * The default command prefix is '~'
-
+* Episodes are not being sent individually to your channel if the series object is new as well.
+* Banners:
+  * Are fetched from your server directly, so if the domain you've provided to the bot isn't publicly accessible, then pictures will fail (I think; well at least for users outside your network; but then what's the point of this anyway lol).
+  * Images on Emby and Jellyfin are retrieved using the API key, which is part of the URL of the image. Please be careful when sharing access to these messages as they grant access to all content on the media server.
+* If you got any recommendations for features or the Image-API-Key-Problem please let me know asap.
 ___
 
 [**Changelog**](https://github.com/Vernoxvernax/JellyCord/blob/main/Changelog.md)
 
 
 Warning:
-I highly encourage you host this yourself. Anyone with the sqlite database can access your media with admin like permissions.
+Do not allow anyone else to host this, under any circumstances!

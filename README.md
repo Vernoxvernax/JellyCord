@@ -50,4 +50,4 @@ ___
 
 
 Warning:
-Do not allow anyone else to host this, under any circumstances!
+Do not allow anyone else to host this for your media-server, under any circumstances!

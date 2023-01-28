@@ -32,7 +32,7 @@ ___
 
 ### Example:
 
-<img src="https://i.imgur.com/wcrIerK.png" height="500"/>
+<img src="https://i.imgur.com/wcrIerK.png" height="501"/>
 
 ___
 ### NOTES:

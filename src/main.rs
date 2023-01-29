@@ -90,7 +90,7 @@ impl EventHandler for Handler {
           let front_db = get_front_database().await;
           for server in front_db {
             let timed_response_obj = get_serialized_page(
-              format!("{}/Users/{}/Items?api_key={}&Recursive=true&IncludeItemTypes=Movie,Series,Episode&Fields=MediaStreams",
+              format!("{}/Users/{}/Items?api_key={}&Recursive=true&IncludeItemTypes=Movie,Series,Episode&Fields=MediaStreams&collapseBoxSetItems=False",
               server.domain, server.user_id, server.token)
             );
             if timed_response_obj.is_err() {
@@ -349,7 +349,7 @@ async fn init(ctx: &Context, msg: &Message) -> CommandResult {
           msg.reply(&ctx, "This UserID has already been added.\nUse \"dump\" to recreate a connection.").await.unwrap();
           break
         };
-        let timed_response = get_serialized_page(format!("{}/Users/{}/Items?api_key={}&Recursive=true&IncludeItemTypes=Movie,Series,Episode&Fields=MediaStreams", &domain, &user_id_raw.unwrap(), &api_token.content));
+        let timed_response = get_serialized_page(format!("{}/Users/{}/Items?api_key={}&Recursive=true&IncludeItemTypes=Movie,Series,Episode&Fields=MediaStreams&collapseBoxSetItems=False", &domain, &user_id_raw.unwrap(), &api_token.content));
         let serialized = match timed_response {
           Ok(ok) => {
             ok

@@ -1,11 +1,10 @@
 #![allow(non_snake_case)]
 use config::{Config, File};
+use std::env;
 use std::process::exit;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::path::Path;
 use std::time::Duration;
-use std::env;
-use chrono;
 use http::StatusCode;
 use isahc::Request;
 use isahc::prelude::*;
@@ -48,11 +47,23 @@ struct MediaResponse {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+enum Type {
+  Movie,
+  Series,
+  Season,
+  Episode,
+  Special
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 struct Library {
   Name: Option<String>,
-  SeriesId: Option<String>,
   Id: String,
-  Type: String,
+  Type: Type,
+  SeriesName: Option<String>,
+  SeriesId: Option<String>,
+  SeasonName: Option<String>,
+  SeasonId: Option<String>,
   MediaStreams: Option<Vec<MediaStream>>,
   CommunityRating: Option<f64>,
   RunTimeTicks: Option<u64>
@@ -65,6 +76,20 @@ struct MediaStream {
   Height: Option<u64>,
 }
 
+trait LibraryTools {
+  fn contains(&self, s: String) -> bool;
+}
+
+impl LibraryTools for Vec<Library> {
+  fn contains(&self, s: String) -> bool {
+    for item in self.iter() {
+      if item.Id == s.clone() {
+        return true;
+      }
+    }
+    false
+  }
+}
 
 #[group]
 #[commands(ping, help, init, dump, pause, unpause)]
@@ -81,7 +106,7 @@ impl EventHandler for Handler {
     println!("{} is connected!", ready.user.name);
     ctx.set_activity(Activity::watching("the internet.")).await;
   }
-  
+
   async fn cache_ready(&self, ctx: Context, _guilds: Vec<GuildId>) {
     println!("Cache built successfully!");
     if !self.is_loop_running.load(Ordering::Relaxed) {
@@ -90,53 +115,50 @@ impl EventHandler for Handler {
           let front_db = get_front_database().await;
           for server in front_db {
             let timed_response_obj = get_serialized_page(
-              format!("{}/Users/{}/Items?api_key={}&Recursive=true&IncludeItemTypes=Movie,Series,Episode&Fields=MediaStreams&collapseBoxSetItems=False",
+              format!("{}/Users/{}/Items?api_key={}&Recursive=true&IncludeItemTypes=Movie,Series,Episode,Season,Special&Fields=MediaStreams&collapseBoxSetItems=False",
               server.domain, server.user_id, server.token)
             );
-            if timed_response_obj.is_err() {
-              eprintln!("Failed to connect to the server. {}", server.domain);
-              continue
-            } else {
-              let serialized_server: MediaResponse = timed_response_obj.unwrap();
-
+            if let Ok(serialized_server) = timed_response_obj {
               let lib = get_library_by_user(server.clone().user_id).await;
 
               let mut library_stringed: Vec<String> = vec![];
               for item in lib {
                 library_stringed.push(item);
               }
-              let mut pre_new_items: Vec<Library> = vec![];
-              let mut fullseries: Vec<Library> = vec![];
+
+              let mut raw_new_items: Vec<Library> = vec![];
+              let mut new_items: Vec<Library> = vec![];
+              let mut pre_season_items: Vec<Library> = vec![];
+              let mut pre_episode_items: Vec<Library> = vec![];
               for item in serialized_server.Items {
                 if ! library_stringed.contains(&item.Id) {
-                  pre_new_items.append(&mut vec![item.clone()]);
-                  if item.Type == "Series".to_string() {
-                    fullseries.append(&mut vec![item]);
-                  }
-                }
-              }
-
-              let mut new_items: Vec<Library> = vec![];
-              for item in pre_new_items {
-                if item.Type == "Episode".to_string() {
-                  let mut skip: bool = false;
-                  for series in fullseries.clone() {
-                    if item.Id == series.Id {
-                      skip = true;
-                      break;
-                    }
-                  }
-                  if ! skip {
+                  raw_new_items.append(&mut vec![item.clone()]);
+                  if item.Type == Type::Movie || item.Type == Type::Series {
                     new_items.append(&mut vec![item.clone()]);
+                  } else if item.Type == Type::Season {
+                    pre_season_items.append(&mut vec![item.clone()]);
+                  } else if item.Type == Type::Episode || item.Type == Type::Special {
+                    pre_episode_items.append(&mut vec![item.clone()]);
                   }
-                } else {
-                  new_items.append(&mut vec![item.clone()]);
                 }
               }
 
-              if ! new_items.is_empty() {
-                for x in new_items.clone() {
-                  let image = format!("{}/Items/{}/Images/Primary?api_key={}&Quality=100", server.domain, x.clone().SeriesId.unwrap_or(x.clone().Id), server.token);
+              for season in pre_season_items.clone() {
+                if ! new_items.contains(season.SeriesId.clone().unwrap()) {
+                  new_items.append(&mut vec![season.clone()]);
+                }
+              }
+
+              for episode in pre_episode_items {
+                if ! new_items.contains(episode.SeasonId.clone().unwrap()) &&
+                ! new_items.contains(episode.SeriesId.clone().unwrap()) {
+                  new_items.append(&mut vec![episode.clone()]);
+                }
+              }
+
+              for x in new_items.clone() {
+                if x.Type == Type::Episode || x.Type == Type::Special || x.Type == Type::Movie {
+                  let image = format!("{}/Items/{}/Images/Primary?api_key={}&Quality=100", server.domain, x.clone().SeasonId.unwrap_or(x.clone().Id), server.token);
                   let (resolution, languages) = if x.MediaStreams.is_some() {
                     let mut height: String = String::new();
                     let mut languages: String = String::new();
@@ -153,7 +175,7 @@ impl EventHandler for Handler {
                     }
                     if languages.is_empty() {
                       languages = "?".to_string()
-                    } else if languages != "?".to_string() {
+                    } else if languages != *"?" {
                       languages = languages.strip_suffix(", ").unwrap().to_string();
                     }
                     (height+"p", languages)
@@ -169,17 +191,22 @@ impl EventHandler for Handler {
                           format!("00:{:02}:{:02}", (time / 60.0).trunc(), (((time / 60.0) - (time / 60.0).trunc()) * 60.0).trunc())
                       }
                     } else {
-                        format!("00:00:{:02}", time)
+                        format!("00:00:{time:02}")
                     };
                     formated
                   } else {
                     "?".to_string()
                   };
+                  let name = if x.Type == Type::Episode || x.Type == Type::Special {
+                    format!("{} - {} - {}", x.SeriesName.unwrap(), x.SeasonName.unwrap(), x.Name.unwrap())
+                  } else {
+                    x.Name.unwrap()
+                  };
 
                   let res = ChannelId(server.channel_id as u64)
                     .send_message(&ctx, |m| {
                       m.embed(|e| {
-                        e.title(x.Name.unwrap())
+                        e.title(name)
                         .image(image)
                       }).add_embed(|e| {
                         e.field(":star: — Rating".to_string(), if x.CommunityRating.is_some() { x.CommunityRating.unwrap().to_string() } else { "?".to_string() }, true)
@@ -188,8 +215,9 @@ impl EventHandler for Handler {
                         .field(":loud_sound: — Languages".to_string(), languages, false)
                       })
                   }).await;
+
                   if let Err(why) = res {
-                    eprintln!("Error sending message: {:?}", why);
+                    eprintln!("Error sending message: {why:?}");
                   } else {
                     let database = sqlx::sqlite::SqlitePoolOptions::new()
                       .max_connections(5)
@@ -202,8 +230,56 @@ impl EventHandler for Handler {
                     sqlx::query(format!("INSERT INTO LIBRARY ({:?}) VALUES (\"{}\")", &server.user_id, &x.Id).as_str()).execute(&database)
                     .await.expect("insert error");
                   }
-                };
-              }
+                } else {
+                  let image = format!("{}/Items/{}/Images/Primary?api_key={}&Quality=100", server.domain, x.clone().SeasonId.unwrap_or(x.clone().Id), server.token);
+                  let name = if x.Type == Type::Season {
+                    format!("{} - {}", x.SeriesName.unwrap(), x.Name.unwrap())
+                  } else {
+                    x.Name.unwrap()
+                  };
+
+                  let res = ChannelId(server.channel_id as u64)
+                    .send_message(&ctx, |m| {
+                      m.embed(|e| {
+                        e.title(name)
+                        .image(image)
+                      })
+                  }).await;
+
+                  if let Err(why) = res {
+                    eprintln!("Error sending message: {why:?}");
+                  } else {
+                    let database = sqlx::sqlite::SqlitePoolOptions::new()
+                      .max_connections(5)
+                      .connect_with(
+                      sqlx::sqlite::SqliteConnectOptions::new()
+                      .filename("jellycord.sqlite")
+                      .create_if_missing(true),
+                    ).await
+                    .expect("Couldn't connect to database");
+                    sqlx::query(format!("INSERT INTO LIBRARY ({:?}) VALUES (\"{}\")", &server.user_id, &x.Id).as_str()).execute(&database)
+                    .await.expect("insert error");
+                    if x.Type == Type::Series {
+                      for item in raw_new_items.clone() {
+                        if item.SeriesId == Some(x.Id.clone()) {
+                          sqlx::query(format!("INSERT INTO LIBRARY ({:?}) VALUES (\"{}\")", &server.user_id, &item.Id).as_str()).execute(&database)
+                          .await.expect("insert error");
+                        }
+                      }
+                    } else if x.Type == Type::Season {
+                      for item in raw_new_items.clone() {
+                        if item.SeasonId == Some(x.Id.clone()) {
+                          sqlx::query(format!("INSERT INTO LIBRARY ({:?}) VALUES (\"{}\")", &server.user_id, &item.Id).as_str()).execute(&database)
+                          .await.expect("insert error");
+                        }
+                      }
+                    }
+                  }
+                }
+              };
+            } else {
+              eprintln!("Failed to connect to the server. {}", server.domain);
+              continue
             }
           };
           tokio::time::sleep(Duration::from_secs(300)).await;
@@ -246,7 +322,7 @@ async fn main() {
     .await
     .expect("Error creating client");
   if let Err(why) = client.start().await {
-    println!("An error occurred while running the client: {:?}", why);
+    println!("An error occurred while running the client: {why:?}");
   }
 }
 
@@ -259,7 +335,7 @@ async fn help(ctx: &Context, msg: &Message) -> CommandResult {
 Commands:
   \"init\" - Initialize current channel and setup jellyfin connection
   \"dump\" - Break jellyfin connection for the current channel
-  \"pause\" - Send all announcements to 127.0.0.1 instead
+  \"pause\" - Don't check for any updates, regarding this channel
   \"unpause\" - Reactivate announcements
 ```";
   msg.reply(ctx, _help_).await?;
@@ -274,7 +350,7 @@ async fn init(ctx: &Context, msg: &Message) -> CommandResult {
   let thread = msg.channel_id.create_public_thread(ctx, msg.id, |t| t.name("JellyCord - Initialize")).await?;
   thread.say(ctx, "Please enter your jellyfin/emby address.\nYou can stop this process by typing \"quit\" right now.").await?;
   loop {
-    let user_reply = msg.author.await_reply(&ctx).await.unwrap();
+    let user_reply = msg.author.await_reply(ctx).await.unwrap();
     let database = sqlx::sqlite::SqlitePoolOptions::new()
         .max_connections(5)
         .connect_with(
@@ -288,7 +364,7 @@ async fn init(ctx: &Context, msg: &Message) -> CommandResult {
       thread.delete(ctx).await?;
       break
     } else {
-      let end = if user_reply.content.ends_with("/") {
+      let end = if user_reply.content.ends_with('/') {
         &user_reply.content[0..&user_reply.content.len() - 1]
       } else {
         &user_reply.content
@@ -297,7 +373,7 @@ async fn init(ctx: &Context, msg: &Message) -> CommandResult {
     };
     let domain = domain.unwrap();
     let api_question = user_reply.reply(&ctx, "Please create an api token and enter it here.").await?;
-    let api_token = &msg.author.await_reply(&ctx).await.unwrap();
+    let api_token = &msg.author.await_reply(ctx).await.unwrap();
     api_token.delete(&ctx).await?;
     api_question.delete(&ctx).await?;
     let users_request = Request::get(format!("{}/Users?api_key={}", &domain, &api_token.content)).body(());
@@ -306,7 +382,7 @@ async fn init(ctx: &Context, msg: &Message) -> CommandResult {
         response.send()
       },
       Err(_) => {
-        thread.say(&ctx, format!("The URL you've entered, seems to be of invalid format?\n- \"https://emby.yourdomain.com\"").as_str()).await?;
+        thread.say(&ctx, "The URL you've entered, seems to be of invalid format?\n- \"https://emby.yourdomain.com\"".to_string()).await?;
         thread.say(ctx, "Please try again by entering your jellyfin/emby address.").await?;
         continue
       }
@@ -317,21 +393,21 @@ async fn init(ctx: &Context, msg: &Message) -> CommandResult {
         match serde_attempt {
           Ok(ok) => Ok(ok),
           Err(_) => {
-            thread.say(&ctx, format!("The request to retrieve available users failed.\nThis is likely due to an incorrect response. Is this really a supported mediaserver?").as_str()).await?;
+            thread.say(&ctx, "The request to retrieve available users failed.\nThis is likely due to an incorrect response. Is this really a supported mediaserver?".to_string()).await?;
             thread.say(ctx, "Please try again by entering your jellyfin/emby address.").await?;
             continue
           }
         }
       },
       Err(err) => {
-        thread.say(&ctx, format!("The request to retrieve available users failed. Try to add \"https://\"\nError: {}", err).as_str()).await?;
+        thread.say(&ctx, format!("The request to retrieve available users failed. Try to add \"https://\"\nError: {err}").to_string()).await?;
         thread.say(ctx, "Please try again by entering your jellyfin/emby address.").await?;
         continue
       }
     };
     thread.say(&ctx, "Received the token.\nNow enter the username, for which you would like to receive the notifications.").await?;
     loop {
-      let username = &msg.author.await_reply(&ctx).await.unwrap().content;
+      let username = &msg.author.await_reply(ctx).await.unwrap().content;
       let mut user_id_raw: Option<String> = None;
       for user in users.as_ref().unwrap().clone().into_iter() {
         if user.Name.to_lowercase() == username.to_lowercase().trim() {
@@ -349,7 +425,7 @@ async fn init(ctx: &Context, msg: &Message) -> CommandResult {
           msg.reply(&ctx, "This UserID has already been added.\nUse \"dump\" to recreate a connection.").await.unwrap();
           break
         };
-        let timed_response = get_serialized_page(format!("{}/Users/{}/Items?api_key={}&Recursive=true&IncludeItemTypes=Movie,Series,Episode&Fields=MediaStreams&collapseBoxSetItems=False", &domain, &user_id_raw.unwrap(), &api_token.content));
+        let timed_response = get_serialized_page(format!("{}/Users/{}/Items?api_key={}&Recursive=true&IncludeItemTypes=Movie,Series,Episode,Season,Special&Fields=MediaStreams&collapseBoxSetItems=False", &domain, &user_id_raw.unwrap(), &api_token.content));
         let serialized = match timed_response {
           Ok(ok) => {
             ok
@@ -376,12 +452,12 @@ async fn init(ctx: &Context, msg: &Message) -> CommandResult {
         .await.expect("insert error");
         let add = Instance {
           active_channel: 1,
-          channel_id: channel_id,
+          channel_id,
           domain,
           token: api_token.content.clone(),
           user_id: user_id.to_string(),
         };
-        let channel_id = add.channel_id as i64;
+        let channel_id = add.channel_id;
         sqlx::query!(
           "INSERT INTO FRONT (Active_Channel, Channel_ID, Domain, Token, UserID) VALUES (?1, ?2, ?3, ?4, ?5)",
           add.active_channel, channel_id, add.domain, add.token, add.user_id).execute(&database)
@@ -410,7 +486,7 @@ async fn dump(ctx: &Context, msg: &Message) -> CommandResult {
     )
     .await
     .expect("Couldn't connect to database");
-  let channel_id = *&msg.channel_id.0 as i64;
+  let channel_id = msg.channel_id.0 as i64;
   sqlx::query!(
     "DELETE FROM FRONT WHERE Channel_ID=?",
     channel_id).execute(&database)
@@ -431,7 +507,7 @@ async fn pause(ctx: &Context, msg: &Message) -> CommandResult {
     )
     .await
     .expect("Couldn't connect to database");
-  let channel_id = *&msg.channel_id.0 as i64;
+  let channel_id = msg.channel_id.0 as i64;
   sqlx::query!(
     "UPDATE FRONT SET Active_Channel = 0 WHERE Channel_ID=?",
     channel_id).execute(&database)
@@ -453,7 +529,7 @@ async fn unpause(ctx: &Context, msg: &Message) -> CommandResult {
     )
     .await
     .expect("Couldn't connect to database");
-  let channel_id = *&msg.channel_id.0 as i64;
+  let channel_id = msg.channel_id.0 as i64;
   sqlx::query!(
     "UPDATE FRONT SET Active_Channel = 1 WHERE Channel_ID=?",
     channel_id).execute(&database)
@@ -492,9 +568,9 @@ fn get_serialized_page(url: String) -> Result<MediaResponse, ()> {
   };
   match serde_json::from_str::<MediaResponse>(&webpage_as_string) {
     Ok(serialized) => Ok(serialized),
-    Err(_e) => {
-      println!("{}", _e);
-      return Err(())
+    Err(e) => {
+      println!("{e}");
+      Err(())
     }
   }
 }

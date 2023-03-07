@@ -1,4 +1,3 @@
-// use sqlx::sqlite::SqliteRow;
 use sqlx::Row;
 
 use crate::Instance;

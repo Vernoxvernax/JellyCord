@@ -1,3 +1,2 @@
-* Improved Series support (+ Season objects)
-* Clarified help message
-* Reset your database, if you don't want to get spammed. Last time I didn't consider the usefulness of Season objects :/
+* Don't exit if client fails to connect. Just keep on trying
+* Fixed small bugs

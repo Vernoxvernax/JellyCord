@@ -150,6 +150,9 @@ impl EventHandler for Handler {
               }
 
               for episode in pre_episode_items {
+                if episode.SeasonId.clone().is_none() {
+                  break;
+                }
                 if ! new_items.contains(episode.SeasonId.clone().unwrap()) &&
                 ! new_items.contains(episode.SeriesId.clone().unwrap()) {
                   new_items.append(&mut vec![episode.clone()]);
@@ -198,9 +201,9 @@ impl EventHandler for Handler {
                     "?".to_string()
                   };
                   let name = if x.Type == Type::Episode || x.Type == Type::Special {
-                    format!("{} - {} - {}", x.SeriesName.unwrap(), x.SeasonName.unwrap(), x.Name.unwrap())
+                    format!("{} - {} - {}", x.SeriesName.unwrap_or("?".to_string()), x.SeasonName.unwrap_or("?".to_string()), x.Name.unwrap_or("?".to_string()))
                   } else {
-                    x.Name.unwrap()
+                    x.Name.unwrap_or("?".to_string())
                   };
 
                   let res = ChannelId(server.channel_id as u64)
@@ -279,6 +282,7 @@ impl EventHandler for Handler {
               };
             } else {
               eprintln!("Failed to connect to the server. {}", server.domain);
+              tokio::time::sleep(Duration::from_secs(2)).await; // Don't ddos the dns server.
               continue
             }
           };
@@ -310,19 +314,25 @@ async fn main() {
   };
   let settings_file_raw = Config::builder().add_source(File::from(Path::new(&"./jellycord.yaml".to_string()))).build().unwrap();
   let serialized = settings_file_raw.try_deserialize::<ConfigFile>().expect("Reading config file.");
-  let framework = StandardFramework::new()
-    .configure(|c| c.prefix(serialized.command_prefix.unwrap_or('~'))) 
-    .group(&GENERAL_GROUP);
+  loop {
+    let framework = StandardFramework::new()
+      .configure(|c| c.prefix(serialized.command_prefix.unwrap_or('~'))) 
+      .group(&GENERAL_GROUP);
     let intents = GatewayIntents::non_privileged() | GatewayIntents::MESSAGE_CONTENT;
-    let mut client = Client::builder(serialized.discord_token, intents)
-    .event_handler(Handler {
-      is_loop_running: AtomicBool::new(false),
-    })
-    .framework(framework)
-    .await
-    .expect("Error creating client");
-  if let Err(why) = client.start().await {
-    println!("An error occurred while running the client: {why:?}");
+    let client = Client::builder(serialized.discord_token.clone(), intents)
+      .event_handler(Handler {
+        is_loop_running: AtomicBool::new(false),
+      })
+      .framework(framework)
+      .await;
+    if client.is_err() {
+      println!("Error creating discord client. Retrying in 60 seconds...");
+      tokio::time::sleep(Duration::from_secs(60)).await;
+      continue;
+    }
+    if let Err(why) = client.unwrap().start().await {
+      println!("An error occurred while running the client: {why:?}");
+    }
   }
 }
 

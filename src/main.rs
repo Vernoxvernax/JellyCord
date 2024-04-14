@@ -1,5 +1,6 @@
 #![allow(non_snake_case)]
 use config::{Config, File};
+use serenity::builder::CreateEmbed;
 use std::env;
 use std::process::exit;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -59,6 +60,8 @@ enum Type {
 struct Library {
   Name: Option<String>,
   Id: String,
+  IndexNumber: Option<u32>,
+  ParentIndexNumber: Option<u32>,
   Type: Type,
   SeriesName: Option<String>,
   SeriesId: Option<String>,
@@ -66,7 +69,9 @@ struct Library {
   SeasonId: Option<String>,
   MediaStreams: Option<Vec<MediaStream>>,
   CommunityRating: Option<f64>,
-  RunTimeTicks: Option<u64>
+  RunTimeTicks: Option<u64>,
+  PremiereDate: Option<String>,
+  EndDate: Option<String>
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -74,6 +79,7 @@ struct MediaStream {
   Type: String,
   Language: Option<String>,
   Height: Option<u64>,
+  IsInterlaced: bool
 }
 
 trait LibraryTools {
@@ -162,28 +168,40 @@ impl EventHandler for Handler {
               for x in new_items.clone() {
                 if x.Type == Type::Episode || x.Type == Type::Special || x.Type == Type::Movie {
                   let image = format!("{}/Items/{}/Images/Primary?api_key={}&Quality=100", server.domain, x.clone().SeasonId.unwrap_or(x.clone().Id), server.token);
-                  let (resolution, languages) = if x.MediaStreams.is_some() {
+                  let (resolution, a_languages, s_languages) = if x.MediaStreams.is_some() {
                     let mut height: String = String::new();
-                    let mut languages: String = String::new();
+                    let mut a_languages: String = String::new();
+                    let mut s_languages: String = String::new();
+                    let mut scan_type: char = 'p';
                     for x in x.MediaStreams.unwrap() {
                       if x.Type == "Video" {
                         height = x.Height.unwrap().to_string();
-                      }
-                      if x.Type == "Audio" {
-                        languages.push_str(&(x.Language.unwrap_or("?".to_string())+", "))
+                        if x.IsInterlaced {
+                          scan_type = 'i';
+                        }
+                      } else if x.Type == "Audio" {
+                        a_languages.push_str(&(x.Language.unwrap_or("?".to_string())+", "))
+                      } else if x.Type == "Subtitle" {
+                        s_languages.push_str(&(x.Language.unwrap_or("?".to_string())+", "))
                       }
                     }
                     if height.is_empty() {
                       height = "?".to_string()
                     }
-                    if languages.is_empty() {
-                      languages = "?".to_string()
-                    } else if languages != *"?" {
-                      languages = languages.strip_suffix(", ").unwrap().to_string();
+                    if a_languages.is_empty() {
+                      a_languages = "?".to_string()
+                    } else if a_languages != *"?" {
+                      a_languages = a_languages.strip_suffix(", ").unwrap().to_string();
                     }
-                    (height+"p", languages)
+                    if s_languages != *"?" {
+                      s_languages = s_languages.strip_suffix(", ").unwrap().to_string();
+                    } else {
+                      s_languages = String::new()
+                    }
+                    height.push(scan_type);
+                    (height, a_languages, s_languages)
                   } else {
-                    ("?".to_string(), "?".to_string())
+                    ("?".to_string(), "?".to_string(), String::new())
                   };
                   let runtime: String = if x.RunTimeTicks.is_some() {
                     let time = (x.RunTimeTicks.unwrap() as f64) / 10000000.0;
@@ -201,10 +219,29 @@ impl EventHandler for Handler {
                     "?".to_string()
                   };
                   let name = if x.Type == Type::Episode || x.Type == Type::Special {
-                    format!("{} - {} - {}", x.SeriesName.unwrap_or("?".to_string()), x.SeasonName.unwrap_or("?".to_string()), x.Name.unwrap_or("?".to_string()))
+                    let time = if let (Some(start), Some(end)) = (x.PremiereDate.clone(), x.EndDate.clone()) {
+                      format!("({}-{})", &start[0..4], &end[0..4])
+                    } else {
+                      format!("({})", &x.PremiereDate.clone().unwrap_or(String::from("????"))[0..4])
+                    };
+                    format!("{} {} - {}",
+                      x.SeriesName.clone().unwrap_or(String::from("???")),
+                      time,
+                      x.Name.unwrap_or("?".to_string())
+                    )
                   } else {
                     x.Name.unwrap_or("?".to_string())
                   };
+
+                  let mut fields = Vec::new();
+                  fields.push((":star: — Rating".to_string(), if x.CommunityRating.is_some() { x.CommunityRating.unwrap().to_string() } else { "?".to_string() }, true));
+                  fields.push((":film_frames: — Runtime".to_string(), runtime.to_string(), true));
+                  fields.push((":frame_photo: — Resolution".to_string(), resolution.to_string(), true));
+                  fields.push((":loud_sound: — Languages".to_string(), a_languages.to_string(), false));
+
+                  if !s_languages.is_empty() {
+                    fields.push((":notepad_spiral: — Languages".to_string(), s_languages.to_string(), false));
+                  }
 
                   let res = ChannelId(server.channel_id as u64)
                     .send_message(&ctx, |m| {
@@ -212,10 +249,10 @@ impl EventHandler for Handler {
                         e.title(name)
                         .image(image)
                       }).add_embed(|e| {
-                        e.field(":star: — Rating".to_string(), if x.CommunityRating.is_some() { x.CommunityRating.unwrap().to_string() } else { "?".to_string() }, true)
-                        .field(":film_frames: — Runtime".to_string(), runtime, true)
-                        .field(":frame_photo: — Resolution".to_string(), resolution, true)
-                        .field(":loud_sound: — Languages".to_string(), languages, false)
+                        for (name, value, inline) in &fields {
+                            e.field(name.clone(), value.clone(), *inline);
+                        }
+                        e
                       })
                   }).await;
 
@@ -282,7 +319,7 @@ impl EventHandler for Handler {
               };
             } else {
               eprintln!("Failed to connect to the server. {}", server.domain);
-              tokio::time::sleep(Duration::from_secs(2)).await; // Don't ddos the dns server.
+              tokio::time::sleep(Duration::from_secs(5)).await; // Don't ddos the dns server.
               continue
             }
           };

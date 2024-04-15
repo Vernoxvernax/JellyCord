@@ -166,6 +166,11 @@ impl EventHandler for Handler {
               }
 
               for x in new_items.clone() {
+                if let Some(streams) = x.MediaStreams.clone() {
+                  if streams.is_empty() {
+                    continue;
+                  }
+                }
                 if x.Type == Type::Episode || x.Type == Type::Special || x.Type == Type::Movie {
                   let image = format!("{}/Items/{}/Images/Primary?api_key={}&Quality=100", server.domain, x.clone().SeasonId.unwrap_or(x.clone().Id), server.token);
                   let (resolution, a_languages, s_languages) = if x.MediaStreams.is_some() {
@@ -193,7 +198,7 @@ impl EventHandler for Handler {
                     } else if a_languages != *"?" {
                       a_languages = a_languages.strip_suffix(", ").unwrap().to_string();
                     }
-                    if s_languages != *"?" {
+                    if s_languages != *"?" && !s_languages.is_empty() {
                       s_languages = s_languages.strip_suffix(", ").unwrap().to_string();
                     } else {
                       s_languages = String::new()
@@ -270,7 +275,7 @@ impl EventHandler for Handler {
                     sqlx::query(format!("INSERT INTO LIBRARY ({:?}) VALUES (\"{}\")", &server.user_id, &x.Id).as_str()).execute(&database)
                     .await.expect("insert error");
                   }
-                } else {
+                } else if x.Type == Type::Season || x.Type == Type::Series {
                   let image = format!("{}/Items/{}/Images/Primary?api_key={}&Quality=100", server.domain, x.clone().SeasonId.unwrap_or(x.clone().Id), server.token);
                   let name = if x.Type == Type::Season {
                     format!("{} - {}", x.SeriesName.unwrap(), x.Name.unwrap())

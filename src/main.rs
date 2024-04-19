@@ -1,6 +1,5 @@
 #![allow(non_snake_case)]
 use config::{Config, File};
-use serenity::builder::CreateEmbed;
 use std::env;
 use std::process::exit;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -229,9 +228,11 @@ impl EventHandler for Handler {
                     } else {
                       format!("({})", &x.PremiereDate.clone().unwrap_or(String::from("????"))[0..4])
                     };
-                    format!("{} {} - {}",
+                    format!("{} {} - S{:02}E{:02} - {}",
                       x.SeriesName.clone().unwrap_or(String::from("???")),
                       time,
+                      x.ParentIndexNumber.unwrap_or(0),
+                      x.IndexNumber.unwrap_or(0),
                       x.Name.unwrap_or("?".to_string())
                     )
                   } else {

@@ -1,0 +1,11 @@
+version: '3.7'
+services:
+  jellycord:
+    image: jellycord:0.1.6
+    build: .
+    container_name: "JellyCord"
+    volumes:
+      - ./data:/data
+    environment:
+      - UID=1000
+      - GID=1000

@@ -8,25 +8,7 @@ ___
 
 ```sh
 git clone <git-url>
-sudo docker build -t jellycord <git-dir>
-```
-
-`docker-compose.yml`:
-```yml
-version: '3.7'
-services:
-  jellycord:
-    image: jellycord
-    container_name: "JellyCord"
-    volumes:
-      - ./data:/data
-    environment:
-      - UID=1000
-      - GID=1000
-```
-
-```sh
-sudo docker-compose up -d
+sudo docker-compose up -d --build
 ```
 
 ___

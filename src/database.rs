@@ -2,8 +2,7 @@ use sqlx::Row;
 
 use crate::Instance;
 
-pub async fn get_front_database() -> Vec<Instance>
-{
+pub async fn get_front_database() -> Vec<Instance> {
   let database = sqlx::sqlite::SqlitePoolOptions::new()
     .max_connections(5)
     .connect_with(
@@ -24,8 +23,7 @@ pub async fn get_front_database() -> Vec<Instance>
   db
 }
 
-pub async fn get_library_by_user(user_id: String) -> Vec<String>
-{
+pub async fn get_library_by_user(user_id: String) -> Vec<String> {
   let database = sqlx::sqlite::SqlitePoolOptions::new()
     .max_connections(5)
     .connect_with(

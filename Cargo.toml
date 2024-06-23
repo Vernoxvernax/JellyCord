@@ -1,18 +1,20 @@
 [package]
 name = "jellycord"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2021"
+license = "MIT"
+readme = "README.md"
+authors = ["DepriSheep"]
+repository = "https://github.com/Vernoxvernax/JellyCord"
 
 [dependencies]
-sqlx = { version = "0.6.2", features = ["runtime-tokio-rustls", "sqlite", "offline", "migrate"] }
-serenity = { version = "0.11.5", features = ["collector", "rustls_backend"] }
-tokio = { version = "1.26.0", features = ["rt-multi-thread", "macros"] }
-config = "0.13.3"
-http = "0.2.9"
+sqlx = { version = "0.7.4", features = ["runtime-tokio-rustls", "sqlite", "migrate"] }
+serenity = "0.12.2"
+tokio = { version = "1.38.0", features = ["rt-multi-thread", "macros"] }
+config = "0.14.0"
 isahc = "1.7.2"
-reqwest = "0.11.14"
-serde = "1.0.152"
-serde_derive = "1.0.152"
-serde_json = "1.0.93"
-toml = "0.7.2"
-chrono = "0.4.23"
+serde = "1.0.203"
+serde_derive = "1.0.203"
+serde_json = "1.0.117"
+toml = "0.8.14"
+chrono = "0.4.38"

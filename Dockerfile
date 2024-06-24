@@ -17,7 +17,7 @@ FROM debian:bookworm-slim AS runtime
 COPY --from=builder /usr/local/cargo/bin/jellycord /usr/local/cargo/bin/jellycord
 COPY docker_build/entrypoint.sh /entrypoint.sh
 RUN apt update -y && \
-    apt install libssl-dev -y && \
+    apt install libssl-dev curl -y && \
     apt clean -y && \
     rm -rf /var/lib/apt/lists/*
 RUN mkdir /data

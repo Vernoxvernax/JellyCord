@@ -1,16 +1,16 @@
 #![allow(non_snake_case)]
-use config::{Config, File};
-use isahc::http::StatusCode;
-use serenity::all::{ActivityData, CreateEmbed, CreateInteractionResponse, CreateInteractionResponseMessage, CreateMessage};
 use std::env;
 use std::process::exit;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::path::Path;
 use std::time::Duration;
+use config::{Config, File};
 use isahc::Request;
 use isahc::prelude::*;
+use isahc::http::StatusCode;
 use serde_derive::{Serialize, Deserialize};
 use serenity::async_trait;
+use serenity::all::{ActivityData, CreateEmbed, CreateInteractionResponse, CreateInteractionResponseMessage, CreateMessage};
 use serenity::model::id::{ChannelId, GuildId};
 use serenity::prelude::*;
 use serenity::model::prelude::*;
@@ -429,24 +429,27 @@ fn get_serialized_page(url: String) -> Result<MediaResponse, ()> {
   .header("Content-Type", "application/json")
   .body(()).expect("Failed to create request. Maybe the link isn't correct.")
   .send();
-  if web_request.is_err() {
-    return Err(());
-  }
-  let webpage_as_string = match web_request.as_ref().unwrap().status() {
-    StatusCode::OK => {
-      match web_request.unwrap().text() {
-        Ok(res) => res,
-        Err(_e) => {
-          return Err(())
-        }
-      }
-    },
-    _ => return Err(())
+
+  let mut response = if let Err(res) = web_request {
+    eprintln!("Error: {}", res.to_string().as_str());
+    exit(1);
+  } else {
+    web_request.unwrap()
   };
+
+  let webpage_as_string = match response.status() {
+    StatusCode::OK => {
+      response.text().unwrap()
+    },
+    _ => {
+      return Err(());
+    }
+  };
+
   match serde_json::from_str::<MediaResponse>(&webpage_as_string) {
     Ok(serialized) => Ok(serialized),
     Err(e) => {
-      println!("{e}");
+      eprintln!("Error: {}", e);
       Err(())
     }
   }

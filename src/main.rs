@@ -8,6 +8,7 @@ use config::{Config, File};
 use isahc::Request;
 use isahc::prelude::*;
 use isahc::http::StatusCode;
+use regex::Regex;
 use serde_derive::{Serialize, Deserialize};
 use serenity::async_trait;
 use serenity::all::{ActivityData, CreateEmbed, CreateInteractionResponse, CreateInteractionResponseMessage, CreateMessage};
@@ -41,7 +42,7 @@ struct UserList {
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 struct MediaResponse {
-  Items: Vec<Library>,
+  Items: Vec<Item>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -54,8 +55,8 @@ enum Type {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
-struct Library {
-  Name: Option<String>,
+struct Item {
+  Name: String,
   Id: String,
   IndexNumber: Option<u32>,
   ParentIndexNumber: Option<u32>,
@@ -68,6 +69,8 @@ struct Library {
   CommunityRating: Option<f64>,
   RunTimeTicks: Option<u64>,
   PremiereDate: Option<String>,
+  pub ProductionYear: Option<u32>,
+  Status: Option<String>,
   EndDate: Option<String>
 }
 
@@ -75,7 +78,7 @@ struct Library {
 struct MediaStream {
   Type: String,
   Language: Option<String>,
-  Height: Option<u64>,
+  Height: Option<u32>,
   IsInterlaced: bool
 }
 
@@ -83,7 +86,7 @@ trait LibraryTools {
   fn contains(&self, s: String) -> bool;
 }
 
-impl LibraryTools for Vec<Library> {
+impl LibraryTools for Vec<Item> {
   fn contains(&self, s: String) -> bool {
     for item in self.iter() {
       if item.Id == s.clone() {
@@ -91,6 +94,66 @@ impl LibraryTools for Vec<Library> {
       }
     }
     false
+  }
+}
+
+impl ToString for Type {
+  fn to_string(&self) -> String {
+    match self {
+      Self::Movie => String::from("Movie"),
+      Self::Episode => String::from("Episode"),
+      Self::Season => String::from("Season"),
+      Self::Series => String::from("Series"),
+      Self::Special => String::from("Special")
+    }
+  }
+}
+
+impl ToString for Item {
+  fn to_string(&self) -> String {
+    let time = if let (Some(start), Some(end)) = (self.PremiereDate.clone(), self.EndDate.clone()) {
+      format!("({}-{})", &start[0..4], &end[0..4])
+    } else if self.Status == Some(String::from("Continuing")) {
+      format!("({}-)", &self.PremiereDate.clone().unwrap_or(String::from("????"))[0..4])
+    } else if let Some(premiere_date) = &self.PremiereDate {
+      format!("({})", &premiere_date[0..4])
+    } else if let Some(production_year) = &self.ProductionYear {
+      format!("({})", production_year)
+    } else {
+      "(???)".to_string()
+    };
+    let mut name: String;
+    match self.Type.to_string().as_str() {
+      "Season" | "Episode" => name = self.SeriesName.clone().unwrap_or(String::from("???")),
+      _ => name = self.Name.clone()
+    }
+    if name.contains('(') {
+      let re = Regex::new(r" \(\d{4}\)").unwrap();
+      name = re.replace_all(&name, "").to_string();
+    }
+    
+    match self.Type.to_string().as_str() {
+      "Movie" | "Series" => {
+        format!("{} {}", name, time)
+      },
+      "Season" => {
+        format!("{} {} - {}",
+          name,
+          time,
+          self.Name.clone()
+        )
+      },
+      "Episode" => {
+        format!("{} {} - S{:02}E{:02} - {}",
+          name,
+          time,
+          self.ParentIndexNumber.unwrap_or(0),
+          self.IndexNumber.unwrap_or(0),
+          self.Name
+        )
+      },
+      _ => format!("{} {} (unknown media type)", self.Name, time)
+    }
   }
 }
 
@@ -144,6 +207,9 @@ impl EventHandler for Handler {
             if let Ok(serialized_server) = timed_response_obj {
               let lib = get_library_by_user(server.clone().user_id).await;
               
+              // Fill the library if it's empty
+              // There is a problem with situations where the library is empty upon creating
+              // and then gets a new entry, but it's absolutely necessary. See `commands/init.rs`
               if lib.is_empty() {
                 let database = sqlx::sqlite::SqlitePoolOptions::new()
                   .max_connections(5)
@@ -174,10 +240,10 @@ impl EventHandler for Handler {
                 library_stringed.push(item);
               }
 
-              let mut raw_new_items: Vec<Library> = vec![];
-              let mut new_items: Vec<Library> = vec![];
-              let mut pre_season_items: Vec<Library> = vec![];
-              let mut pre_episode_items: Vec<Library> = vec![];
+              let mut raw_new_items: Vec<Item> = vec![];
+              let mut new_items: Vec<Item> = vec![];
+              let mut pre_season_items: Vec<Item> = vec![];
+              let mut pre_episode_items: Vec<Item> = vec![];
               for item in serialized_server.Items {
                 if ! library_stringed.contains(&item.Id) {
                   raw_new_items.append(&mut vec![item.clone()]);
@@ -197,7 +263,7 @@ impl EventHandler for Handler {
                 }
               }
 
-              for episode in pre_episode_items {
+              for episode in pre_episode_items.clone() {
                 if episode.SeasonId.clone().is_none() {
                   break;
                 }
@@ -213,7 +279,9 @@ impl EventHandler for Handler {
                     continue;
                   }
                 }
+
                 if x.Type == Type::Episode || x.Type == Type::Special || x.Type == Type::Movie {
+                  let name = x.to_string();
                   let image = format!("{}/Items/{}/Images/Primary?api_key={}&Quality=100", server.domain, x.clone().SeasonId.unwrap_or(x.clone().Id), server.token);
                   let (resolution, a_languages, s_languages) = if x.MediaStreams.is_some() {
                     let mut height: String = String::new();
@@ -265,22 +333,6 @@ impl EventHandler for Handler {
                   } else {
                     "?".to_string()
                   };
-                  let name = if x.Type == Type::Episode || x.Type == Type::Special {
-                    let time = if let (Some(start), Some(end)) = (x.PremiereDate.clone(), x.EndDate.clone()) {
-                      format!("({}-{})", &start[0..4], &end[0..4])
-                    } else {
-                      format!("({})", &x.PremiereDate.clone().unwrap_or(String::from("????"))[0..4])
-                    };
-                    format!("{} {} - S{:02}E{:02} - {}",
-                      x.SeriesName.clone().unwrap_or(String::from("???")),
-                      time,
-                      x.ParentIndexNumber.unwrap_or(0),
-                      x.IndexNumber.unwrap_or(0),
-                      x.Name.unwrap_or("?".to_string())
-                    )
-                  } else {
-                    x.Name.unwrap_or("?".to_string())
-                  };
 
                   let mut fields = Vec::new();
                   fields.push((":star: — Rating".to_string(), if x.CommunityRating.is_some() { x.CommunityRating.unwrap().to_string() } else { "?".to_string() }, true));
@@ -324,20 +376,163 @@ impl EventHandler for Handler {
                     .await.expect("insert error");
                   }
                 } else if x.Type == Type::Season || x.Type == Type::Series {
-                  let image = format!("{}/Items/{}/Images/Primary?api_key={}&Quality=100", server.domain, x.clone().SeasonId.unwrap_or(x.clone().Id), server.token);
-                  let name = if x.Type == Type::Season {
-                    format!("{} - {}", x.SeriesName.unwrap(), x.Name.unwrap())
+                  let seasons = if x.Type == Type::Series {
+                    let mut temp = vec![];
+                    for season in pre_season_items.clone() {
+                      if season.SeriesId.clone().unwrap() == x.Id {
+                        temp.push(season);
+                      }
+                    }
+                    temp
                   } else {
-                    x.Name.unwrap()
+                    vec![x.clone()]
                   };
 
+                  let mut runtimes: Vec<u64> = vec![];
+                  let mut ratings: Vec<f64> = vec![];
+                  let mut resolutions: Vec<String> = vec![];
+                  let mut a_languages: Vec<String> = vec![];
+                  let mut s_languages: Vec<String> = vec![];
+                  for season in seasons {
+                    for episode in pre_episode_items.clone() {
+                      if episode.SeasonId.unwrap() == season.Id {
+                        if let Some(runtime) = episode.RunTimeTicks {
+                          runtimes.push(runtime);
+                        }
+                        if let Some(rating) = episode.CommunityRating {
+                          if rating != 0.0 {
+                            ratings.push(rating);
+                          }
+                        }
+                        if let Some(mediastreams) = episode.MediaStreams {
+                          let mut height = String::new();
+                          let mut scan_type: char = 'p';
+                          for x in mediastreams {
+                            if x.Type == "Video" {
+                              height = x.Height.unwrap().to_string();
+                              if x.IsInterlaced {
+                                scan_type = 'i';
+                              }
+                            } else if x.Type == "Audio" {
+                              let lang = x.Language.unwrap_or("?".to_string());
+                              if !a_languages.contains(&lang) {
+                                a_languages.push(lang);
+                              }
+                            } else if x.Type == "Subtitle" {
+                              let lang = x.Language.unwrap_or("?".to_string());
+                              if !s_languages.contains(&lang) {
+                                s_languages.push(lang);
+                              }
+                            }
+                          }
+                          if height.is_empty() {
+                            height = "?".to_string()
+                          }
+                          height.push(scan_type);
+                          if !resolutions.contains(&height) {
+                            resolutions.push(height);
+                          }
+                        }
+                      }
+                    }
+                  }
+                  let image = format!("{}/Items/{}/Images/Primary?api_key={}&Quality=100", server.domain, x.clone().SeasonId.unwrap_or(x.clone().Id), server.token);
+                  let name = x.to_string();
+
+                  let avg_rating = if !ratings.is_empty() {
+                    let mut total = 0.0;
+                    for x in ratings.clone() {
+                      total += x;
+                    }
+                    format!("{}", total / ratings.len() as f64)
+                  } else {
+                    String::from("?")
+                  };
+
+                  let total_runtime = if !runtimes.is_empty() {
+                    let mut total = 0;
+                    for x in runtimes {
+                      total += x;
+                    }
+                    let time = (total as f64) / 10000000.0;
+                    let runtime: String = if time > 60.0 {
+                      if (time / 60.0) > 60.0 {
+                          format!("{:02}:{:02}:{:02}", ((time / 60.0) / 60.0).trunc(), ((((time / 60.0) / 60.0) - ((time / 60.0) / 60.).trunc()) * 60.0).trunc(), (((time / 60.0) - (time / 60.0).trunc()) * 60.0).trunc())
+                      } else {
+                          format!("00:{:02}:{:02}", (time / 60.0).trunc(), (((time / 60.0) - (time / 60.0).trunc()) * 60.0).trunc())
+                      }
+                    } else {
+                        format!("00:00:{time:02}")
+                    };
+                    runtime
+                  } else {
+                    String::from("?")
+                  };
+
+                  let resolution_list = if !resolutions.is_empty() {
+                    let mut temp = String::new();
+                    for (index, x) in resolutions.iter().enumerate() {
+                      if index > 50 {
+                        break;
+                      }
+                      temp.push_str(&(x.to_owned()+", "));
+                    }
+                    temp.strip_suffix(", ").unwrap().to_string()
+                  } else {
+                    String::from("?")
+                  };
+
+                  let a_languages_list = if !a_languages.is_empty() {
+                    let mut temp = String::new();
+                    for (index, x) in a_languages.iter().enumerate() {
+                      if index > 50 {
+                        break;
+                      }
+                      temp.push_str(&(x.to_owned()+", "));
+                    }
+                    temp.strip_suffix(", ").unwrap().to_string()
+                  } else {
+                    String::from("?")
+                  };
+
+                  let s_languages_list = if !s_languages.is_empty() {
+                    let mut temp = String::new();
+                    for (index, x) in s_languages.iter().enumerate() {
+                      if index > 50 {
+                        break;
+                      }
+                      temp.push_str(&(x.to_owned()+", "));
+                    }
+                    temp.strip_suffix(", ").unwrap().to_string()
+                  } else {
+                    String::from("?")
+                  };
+
+                  let mut fields = vec![
+                    (":star: — Rating".to_string(), avg_rating, true),
+                    (":film_frames: — Runtime".to_string(), total_runtime, true),
+                    (":frame_photo: — Resolution".to_string(), resolution_list, true),
+                    (":loud_sound: — Languages".to_string(), a_languages_list, false)
+                  ];
+                  
+                  if !s_languages_list.is_empty() {
+                    fields.push((":notepad_spiral: — Languages".to_string(), s_languages_list, false));
+                  }
+
+                  let mut embed = CreateEmbed::default();
+                  for (name, value, inline) in &fields {
+                    embed = embed.field(name.clone(), value.clone(), *inline);
+                  }
+
                   let res = ChannelId::new(server.channel_id as u64)
-                  .send_message(&ctx,
-                    CreateMessage::new()
-                    .embed(
+                  .send_message(&ctx, CreateMessage::new()
+                    .add_embed(
                       CreateEmbed::new()
                       .title(name)
                       .image(image)
+                    )
+                    .add_embed(
+                      embed
                     )
                   ).await;
 

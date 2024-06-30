@@ -88,14 +88,21 @@ pub async fn run(options: &[CommandDataOption]) -> String {
       return "This UserID has already been added.".to_string();
     };
 
+    // If the table already exists in the database then just rename it.
     if sqlx::query(format!("SELECT {} FROM LIBRARY", &user_id).as_str()).fetch_one(&database).await.is_ok() {
       sqlx::query(
         format!("ALTER TABLE LIBRARY RENAME COLUMN {:?} TO \"{}_{}\"",
-          &user_id, &user_id, chrono::offset::Utc::now().timestamp()
-        ).as_str()).execute(&database).await
+        &user_id, &user_id, chrono::offset::Utc::now().timestamp()
+      ).as_str()).execute(&database).await
       .expect("couldn't rename database");
     };
-
+  
+    // Here, we can only create a new table for the database.
+    // Previously, this segment also requested and inserted the library
+    // from jellyfin into the database, but at least on my setup the
+    // request alone greatly outlives the maximum timeout for discord's
+    // command response, so we just leave it empty and fill it later
+    // within the loop in `main.rs`.
     sqlx::query(
       format!("ALTER TABLE LIBRARY ADD {:?} VARCHAR(30)", &user_id).as_str())
       .execute(&database)
@@ -134,7 +141,7 @@ pub fn register() -> CreateCommand {
       CreateCommandOption::new(
         CommandOptionType::String,
         "url",
-        "URL where JellyCord can access your mediacenter"
+        "URL to JellyFin. Without `/web/*`"
       )
       .min_length(5)
       .required(true)

@@ -444,7 +444,7 @@ impl EventHandler for Handler {
                     for x in ratings.clone() {
                       total += x;
                     }
-                    format!("{}", total / ratings.len() as f64)
+                    format!("{:.2}", total / ratings.len() as f64)
                   } else {
                     String::from("?")
                   };

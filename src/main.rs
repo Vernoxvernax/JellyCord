@@ -7,7 +7,6 @@ use std::time::Duration;
 use config::{Config, File};
 use isahc::Request;
 use isahc::prelude::*;
-use isahc::http::StatusCode;
 use regex::Regex;
 use serde_derive::{Serialize, Deserialize};
 use serenity::async_trait;
@@ -632,9 +631,9 @@ fn get_serialized_page(url: String) -> Result<MediaResponse, ()> {
     web_request.unwrap()
   };
 
-  let webpage_as_string = match response.status() {
-    StatusCode::OK => {
-      response.text().unwrap()
+  let webpage_as_string = match response.text() {
+    Ok(text) => {
+      text
     },
     _ => {
       return Err(());

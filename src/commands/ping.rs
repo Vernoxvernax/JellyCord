@@ -7,6 +7,6 @@ pub async fn run(_options: &[CommandDataOption]) -> String {
 
 pub fn register() -> CreateCommand {
   CreateCommand::new("ping")
-  .description("Wastes bandwidth")
-  .default_member_permissions(Permissions::ADMINISTRATOR)
+    .description("Wastes bandwidth")
+    .default_member_permissions(Permissions::ADMINISTRATOR)
 }

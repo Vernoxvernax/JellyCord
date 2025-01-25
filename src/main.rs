@@ -213,7 +213,7 @@ impl EventHandler for Handler {
     println!("Cache built successfully!");
     if !self.is_loop_running.load(Ordering::Relaxed) {
       tokio::spawn(async move {
-        loop {
+        'main: loop {
           let front_db = get_front_database().await;
           for server in front_db {
             let timed_response_obj = get_serialized_page(
@@ -277,6 +277,10 @@ impl EventHandler for Handler {
                   } else if item.Type == Type::Season {
                     pre_season_items.append(&mut vec![item.clone()]);
                   } else if item.Type == Type::Episode || item.Type == Type::Special {
+                    if item.SeasonId.is_none() {
+                      // something's wrong. give jellyfin more time to find metadata to propagate this value.
+                      continue 'main;
+                    }
                     pre_episode_items.append(&mut vec![item.clone()]);
                   }
                 }
@@ -299,7 +303,8 @@ impl EventHandler for Handler {
                 }
               }
 
-              for x in new_items.clone() {
+              new_items.reverse();
+              for x in new_items {
                 if let Some(streams) = x.MediaStreams.clone() {
                   if streams.is_empty() {
                     continue;

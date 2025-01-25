@@ -8,14 +8,13 @@ authors = ["DepriSheep"]
 repository = "https://github.com/Vernoxvernax/JellyCord"
 
 [dependencies]
-sqlx = { version = "0.7.4", features = ["runtime-tokio-rustls", "sqlite", "migrate"] }
-serenity = "0.12.2"
-tokio = { version = "1.38.0", features = ["rt-multi-thread", "macros"] }
-config = "0.14.0"
+sqlx = { version = "0.8.3", features = ["runtime-tokio-rustls", "sqlite", "migrate"] }
+serenity = "0.12.4"
+tokio = { version = "1.43.0", features = ["rt-multi-thread", "macros"] }
+config = "0.15.6"
 isahc = "1.7.2"
-serde = "1.0.203"
-serde_derive = "1.0.203"
-serde_json = "1.0.117"
-toml = "0.8.14"
-chrono = "0.4.38"
-regex = "1.10.5"
+serde = "1.0.217"
+serde_derive = "1.0.217"
+serde_json = "1.0.137"
+chrono = "0.4.39"
+regex = "1.11.1"

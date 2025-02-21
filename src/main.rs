@@ -1,7 +1,7 @@
 #![allow(non_snake_case)]
 use config::{Config, File};
-use isahc::prelude::*;
 use isahc::Request;
+use isahc::prelude::*;
 use regex::Regex;
 use serde_derive::{Deserialize, Serialize};
 use serenity::all::{
@@ -216,10 +216,10 @@ impl EventHandler for Handler {
         'main: loop {
           let front_db = get_front_database().await;
           for server in front_db {
-            let timed_response_obj = get_serialized_page(
-              format!("{}/Users/{}/Items?api_key={}&Recursive=true&IncludeItemTypes=Movie,Series,Episode,Season,Special&Fields=MediaStreams&collapseBoxSetItems=False",
-              server.domain, server.user_id, server.token)
-            );
+            let timed_response_obj = get_serialized_page(format!(
+              "{}/Users/{}/Items?api_key={}&Recursive=true&IncludeItemTypes=Movie,Series,Episode,Season,Special&Fields=MediaStreams&collapseBoxSetItems=False",
+              server.domain, server.user_id, server.token
+            ));
             if let Ok(serialized_server) = timed_response_obj {
               let lib = get_library_by_user(server.clone().user_id).await;
 

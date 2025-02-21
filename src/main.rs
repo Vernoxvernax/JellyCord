@@ -759,7 +759,7 @@ fn get_serialized_page(url: String) -> Result<MediaResponse, ()> {
 
   let mut response = if let Err(res) = web_request {
     eprintln!("Error: {}", res.to_string().as_str());
-    exit(1);
+    return Err(());
   } else {
     web_request.unwrap()
   };

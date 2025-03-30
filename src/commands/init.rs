@@ -44,7 +44,10 @@ pub async fn run(options: &[CommandDataOption]) -> String {
 
   let domain = url.trim_end_matches('/').to_string();
   let client = Client::new();
-  let users_request = client.get(format!("{}/Users?api_key={}", &domain, &token)).send().await;
+  let users_request = client
+    .get(format!("{}/Users?api_key={}", &domain, &token))
+    .send()
+    .await;
   if users_request.is_err() {
     database.close().await;
     return "The URL you've entered, seems to be of invalid format?\n- \"https://emby.yourdomain.com\"".to_string();

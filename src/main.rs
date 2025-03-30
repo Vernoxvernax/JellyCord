@@ -749,10 +749,12 @@ async fn main() {
 
 async fn get_serialized_page(url: String) -> Result<MediaResponse, ()> {
   let client = reqwest::Client::new();
-  let web_request = client.get(url)
+  let web_request = client
+    .get(url)
     .timeout(Duration::from_secs(120))
     .header("Content-Type", "application/json")
-    .send().await;
+    .send()
+    .await;
 
   let response = if let Err(res) = web_request {
     eprintln!("Error: {}", res.to_string().as_str());

@@ -1,4 +1,4 @@
-use isahc::{ReadResponseExt, Request, RequestExt};
+use reqwest::Client;
 use serenity::all::{
   ChannelType, CommandDataOption, CommandDataOptionValue, CommandOptionType, CreateCommand,
   CreateCommandOption, Permissions,
@@ -43,18 +43,16 @@ pub async fn run(options: &[CommandDataOption]) -> String {
     .expect("Couldn't connect to database");
 
   let domain = url.trim_end_matches('/').to_string();
-  let users_request = Request::get(format!("{}/Users?api_key={}", &domain, &token)).body(());
-  let users_response: Result<isahc::http::Response<_>, isahc::Error> = match users_request {
-    Ok(response) => response.send(),
-    Err(_) => {
-      database.close().await;
-      return "The URL you've entered, seems to be of invalid format?\n- \"https://emby.yourdomain.com\"".to_string();
-    },
-  };
+  let client = Client::new();
+  let users_request = client.get(format!("{}/Users?api_key={}", &domain, &token)).send().await;
+  if users_request.is_err() {
+    database.close().await;
+    return "The URL you've entered, seems to be of invalid format?\n- \"https://emby.yourdomain.com\"".to_string();
+  }
 
-  let users: Result<Vec<UserList>, String> = match users_response {
-    Ok(mut ok) => {
-      let serde_attempt = serde_json::from_str::<Vec<UserList>>(&ok.text().unwrap());
+  let users: Result<Vec<UserList>, String> = match users_request {
+    Ok(ok) => {
+      let serde_attempt = serde_json::from_str::<Vec<UserList>>(&ok.text().await.unwrap());
       match serde_attempt {
         Ok(ok) => Ok(ok),
         Err(_) => {

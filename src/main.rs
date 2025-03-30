@@ -1,7 +1,5 @@
 #![allow(non_snake_case)]
 use config::{Config, File};
-use isahc::Request;
-use isahc::prelude::*;
 use regex::Regex;
 use serde_derive::{Deserialize, Serialize};
 use serenity::all::{
@@ -219,7 +217,7 @@ impl EventHandler for Handler {
             let timed_response_obj = get_serialized_page(format!(
               "{}/Users/{}/Items?api_key={}&Recursive=true&IncludeItemTypes=Movie,Series,Episode,Season,Special&Fields=MediaStreams&collapseBoxSetItems=False",
               server.domain, server.user_id, server.token
-            ));
+            )).await;
             if let Ok(serialized_server) = timed_response_obj {
               let lib = get_library_by_user(server.clone().user_id).await;
 
@@ -749,22 +747,21 @@ async fn main() {
   }
 }
 
-fn get_serialized_page(url: String) -> Result<MediaResponse, ()> {
-  let web_request = Request::get(url)
+async fn get_serialized_page(url: String) -> Result<MediaResponse, ()> {
+  let client = reqwest::Client::new();
+  let web_request = client.get(url)
     .timeout(Duration::from_secs(120))
     .header("Content-Type", "application/json")
-    .body(())
-    .expect("Failed to create request. Maybe the link isn't correct.")
-    .send();
+    .send().await;
 
-  let mut response = if let Err(res) = web_request {
+  let response = if let Err(res) = web_request {
     eprintln!("Error: {}", res.to_string().as_str());
     return Err(());
   } else {
     web_request.unwrap()
   };
 
-  let webpage_as_string = match response.text() {
+  let webpage_as_string = match response.text().await {
     Ok(text) => text,
     _ => {
       return Err(());

@@ -8,7 +8,7 @@ ___
 
 ```sh
 git clone <git-url>
-sudo docker-compose up -d --build
+sudo docker compose up -d --build
 ```
 
 ___
@@ -21,7 +21,6 @@ ___
 ### NOTES:
 
 * Make sure to edit the config file.
-* The default command prefix is '~'
 * Series:
   * Series objects only posted by themselves and if they are new
   * Season objects only posted by themselves and if they are new

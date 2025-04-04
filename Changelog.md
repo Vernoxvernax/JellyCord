@@ -9,3 +9,7 @@
 * fix: change behaviour when creating a new channel
 * fix: avoid problems when jellyfin is still indexing
 * feat: attempt to send updates in the correct order
+* fix: try again when encountering network issues
+* chore: replacing unmaintained isahc with reqwest
+* fix: add support for multi-episode items
+* fix: update dockerfile; improved size, I think

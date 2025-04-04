@@ -237,12 +237,9 @@ impl EventHandler for Handler {
 
                 let mut id_as_value: String = String::new();
                 for item in serialized_server.clone().Items {
-                  if &item == serialized_server.Items.last().unwrap() {
-                    id_as_value.push_str(format!("(\"{}\")", item.Id).as_str());
-                  } else {
-                    id_as_value.push_str(format!("(\"{}\"),", item.Id).as_str());
-                  }
+                  id_as_value.push_str(format!("(\"{}\"),", item.Id).as_str());
                 }
+                id_as_value.pop();
 
                 sqlx::query(
                   format!(

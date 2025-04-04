@@ -60,6 +60,7 @@ struct Item {
   Id: String,
   IndexNumber: Option<u32>,
   ParentIndexNumber: Option<u32>,
+  IndexNumberEnd: Option<u32>,
   Type: Type,
   SeriesName: Option<String>,
   SeriesId: Option<String>,
@@ -146,15 +147,28 @@ impl ToString for Item {
       "Season" => {
         format!("{} {} - {}", name, time, self.Name.clone())
       },
-      "Episode" => {
-        format!(
-          "{} {} - S{:02}E{:02} - {}",
-          name,
-          time,
-          self.ParentIndexNumber.unwrap_or(0),
-          self.IndexNumber.unwrap_or(0),
-          self.Name
-        )
+      "Episode" => match self.IndexNumberEnd {
+        Some(indexend) => {
+          format!(
+            "{} {} - S{:02}E{:02}-{:02} - {}",
+            name,
+            time,
+            self.ParentIndexNumber.unwrap_or(0),
+            self.IndexNumber.unwrap_or(0),
+            indexend,
+            self.Name
+          )
+        },
+        None => {
+          format!(
+            "{} {} - S{:02}E{:02} - {}",
+            name,
+            time,
+            self.ParentIndexNumber.unwrap_or(0),
+            self.IndexNumber.unwrap_or(0),
+            self.Name
+          )
+        },
       },
       _ => format!("{} {} (unknown media type)", self.Name, time),
     }

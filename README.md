@@ -8,25 +8,7 @@ ___
 
 ```sh
 git clone <git-url>
-sudo docker build -t jellycord <git-dir>
-```
-
-`docker-compose.yml`:
-```yml
-version: '3.7'
-services:
-  jellycord:
-    image: jellycord
-    container_name: "JellyCord"
-    volumes:
-      - ./data:/data
-    environment:
-      - UID=1000
-      - GID=1000
-```
-
-```sh
-sudo docker-compose up -d
+sudo docker compose up -d --build
 ```
 
 ___
@@ -39,7 +21,6 @@ ___
 ### NOTES:
 
 * Make sure to edit the config file.
-* The default command prefix is '~'
 * Series:
   * Series objects only posted by themselves and if they are new
   * Season objects only posted by themselves and if they are new

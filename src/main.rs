@@ -1,29 +1,28 @@
 #![allow(non_snake_case)]
 use config::{Config, File};
-use std::env;
-use std::process::exit;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::path::Path;
-use std::time::Duration;
-use http::StatusCode;
-use isahc::Request;
-use isahc::prelude::*;
-use serde_derive::{Serialize, Deserialize};
+use regex::Regex;
+use serde_derive::{Deserialize, Serialize};
+use serenity::all::{
+  ActivityData, CreateEmbed, CreateInteractionResponse, CreateInteractionResponseMessage,
+  CreateMessage,
+};
 use serenity::async_trait;
 use serenity::model::id::{ChannelId, GuildId};
-use serenity::prelude::*;
-use serenity::model::channel::Message;
 use serenity::model::prelude::*;
-use serenity::framework::standard::macros::{command, group};
-use serenity::framework::standard::{StandardFramework, CommandResult};
+use serenity::prelude::*;
+use std::env;
+use std::path::Path;
+use std::process::exit;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
+mod commands;
 mod database;
 use database::*;
 
 #[derive(Deserialize)]
 struct ConfigFile {
   discord_token: String,
-  command_prefix: Option<char>
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -32,7 +31,7 @@ pub struct Instance {
   pub channel_id: i64,
   pub domain: String,
   pub token: String,
-  pub user_id: String
+  pub user_id: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -43,7 +42,7 @@ struct UserList {
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 struct MediaResponse {
-  Items: Vec<Library>,
+  Items: Vec<Item>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -52,13 +51,16 @@ enum Type {
   Series,
   Season,
   Episode,
-  Special
+  Special,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
-struct Library {
-  Name: Option<String>,
+struct Item {
+  Name: String,
   Id: String,
+  IndexNumber: Option<u32>,
+  ParentIndexNumber: Option<u32>,
+  IndexNumberEnd: Option<u32>,
   Type: Type,
   SeriesName: Option<String>,
   SeriesId: Option<String>,
@@ -66,21 +68,26 @@ struct Library {
   SeasonId: Option<String>,
   MediaStreams: Option<Vec<MediaStream>>,
   CommunityRating: Option<f64>,
-  RunTimeTicks: Option<u64>
+  RunTimeTicks: Option<u64>,
+  PremiereDate: Option<String>,
+  pub ProductionYear: Option<u32>,
+  Status: Option<String>,
+  EndDate: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 struct MediaStream {
   Type: String,
   Language: Option<String>,
-  Height: Option<u64>,
+  Height: Option<u32>,
+  IsInterlaced: bool,
 }
 
 trait LibraryTools {
   fn contains(&self, s: String) -> bool;
 }
 
-impl LibraryTools for Vec<Library> {
+impl LibraryTools for Vec<Item> {
   fn contains(&self, s: String) -> bool {
     for item in self.iter() {
       if item.Id == s.clone() {
@@ -91,163 +98,343 @@ impl LibraryTools for Vec<Library> {
   }
 }
 
-#[group]
-#[commands(ping, help, init, dump, pause, unpause)]
-struct General;
+impl ToString for Type {
+  fn to_string(&self) -> String {
+    match self {
+      Self::Movie => String::from("Movie"),
+      Self::Episode => String::from("Episode"),
+      Self::Season => String::from("Season"),
+      Self::Series => String::from("Series"),
+      Self::Special => String::from("Special"),
+    }
+  }
+}
+
+impl ToString for Item {
+  fn to_string(&self) -> String {
+    let time = if let (Some(start), Some(end)) = (self.PremiereDate.clone(), self.EndDate.clone()) {
+      if start[0..4] == end[0..4] {
+        format!("({})", &start[0..4])
+      } else {
+        format!("({}-{})", &start[0..4], &end[0..4])
+      }
+    } else if self.Status == Some(String::from("Continuing")) {
+      format!(
+        "({}-)",
+        &self.PremiereDate.clone().unwrap_or(String::from("????"))[0..4]
+      )
+    } else if let Some(premiere_date) = &self.PremiereDate {
+      format!("({})", &premiere_date[0..4])
+    } else if let Some(production_year) = &self.ProductionYear {
+      format!("({})", production_year)
+    } else {
+      "(???)".to_string()
+    };
+    let mut name: String;
+    match self.Type.to_string().as_str() {
+      "Season" | "Episode" => name = self.SeriesName.clone().unwrap_or(String::from("???")),
+      _ => name = self.Name.clone(),
+    }
+    if name.contains('(') {
+      let re = Regex::new(r" \(\d{4}\)").unwrap();
+      name = re.replace_all(&name, "").to_string();
+    }
+
+    match self.Type.to_string().as_str() {
+      "Movie" | "Series" => {
+        format!("{} {}", name, time)
+      },
+      "Season" => {
+        format!("{} {} - {}", name, time, self.Name.clone())
+      },
+      "Episode" => match self.IndexNumberEnd {
+        Some(indexend) => {
+          format!(
+            "{} {} - S{:02}E{:02}-{:02} - {}",
+            name,
+            time,
+            self.ParentIndexNumber.unwrap_or(0),
+            self.IndexNumber.unwrap_or(0),
+            indexend,
+            self.Name
+          )
+        },
+        None => {
+          format!(
+            "{} {} - S{:02}E{:02} - {}",
+            name,
+            time,
+            self.ParentIndexNumber.unwrap_or(0),
+            self.IndexNumber.unwrap_or(0),
+            self.Name
+          )
+        },
+      },
+      _ => format!("{} {} (unknown media type)", self.Name, time),
+    }
+  }
+}
 
 struct Handler {
   is_loop_running: AtomicBool,
 }
 
-
 #[async_trait]
 impl EventHandler for Handler {
+  async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
+    if let Interaction::Command(command) = interaction {
+      let content = match command.data.name.as_str() {
+        "help" => commands::help::run(&command.data.options).await,
+        "init" => commands::init::run(&command.data.options).await,
+        "reset" => commands::reset::run(&command.data.options).await,
+        "pause" => commands::pause::run(&command.data.options).await,
+        "ping" => commands::ping::run(&command.data.options).await,
+        _ => "Not implemented >~< - (Contact: @DepriSheep)".to_string(),
+      };
+
+      let data = CreateInteractionResponseMessage::new().content(content);
+      let builder = CreateInteractionResponse::Message(data);
+      if let Err(why) = command.create_response(&ctx.http, builder).await {
+        println!("Cannot respond to slash command: {}", why);
+      }
+    }
+  }
+
   async fn ready(&self, ctx: Context, ready: Ready) {
+    Command::create_global_command(&ctx.http, commands::help::register())
+      .await
+      .unwrap();
+    Command::create_global_command(&ctx.http, commands::init::register())
+      .await
+      .unwrap();
+    Command::create_global_command(&ctx.http, commands::pause::register())
+      .await
+      .unwrap();
+    Command::create_global_command(&ctx.http, commands::reset::register())
+      .await
+      .unwrap();
+    Command::create_global_command(&ctx.http, commands::ping::register())
+      .await
+      .unwrap();
+
     println!("{} is connected!", ready.user.name);
-    ctx.set_activity(Activity::watching("the internet.")).await;
+    ctx.set_activity(Some(ActivityData::watching("the internet.")));
   }
 
   async fn cache_ready(&self, ctx: Context, _guilds: Vec<GuildId>) {
     println!("Cache built successfully!");
     if !self.is_loop_running.load(Ordering::Relaxed) {
       tokio::spawn(async move {
-        loop {
+        'main: loop {
           let front_db = get_front_database().await;
           for server in front_db {
-            let timed_response_obj = get_serialized_page(
-              format!("{}/Users/{}/Items?api_key={}&Recursive=true&IncludeItemTypes=Movie,Series,Episode,Season,Special&Fields=MediaStreams&collapseBoxSetItems=False",
-              server.domain, server.user_id, server.token)
-            );
+            let timed_response_obj = get_serialized_page(format!(
+              "{}/Users/{}/Items?api_key={}&Recursive=true&IncludeItemTypes=Movie,Series,Episode,Season,Special&Fields=MediaStreams&collapseBoxSetItems=False",
+              server.domain, server.user_id, server.token
+            )).await;
             if let Ok(serialized_server) = timed_response_obj {
               let lib = get_library_by_user(server.clone().user_id).await;
+
+              // Fill the library if it's empty
+              // There is a problem with situations where the library is empty upon creating
+              // and then gets a new entry, but it's absolutely necessary. See `commands/init.rs`
+              if lib.is_empty() {
+                let database = sqlx::sqlite::SqlitePoolOptions::new()
+                  .max_connections(5)
+                  .connect_with(
+                    sqlx::sqlite::SqliteConnectOptions::new()
+                      .filename("jellycord.sqlite")
+                      .create_if_missing(true),
+                  )
+                  .await
+                  .expect("Couldn't connect to database");
+
+                let mut id_as_value: String = String::new();
+                for item in serialized_server.clone().Items {
+                  id_as_value.push_str(format!("(\"{}\"),", item.Id).as_str());
+                }
+                id_as_value.pop();
+
+                sqlx::query(
+                  format!(
+                    "INSERT INTO LIBRARY ({:?}) VALUES {}",
+                    &server.user_id, &id_as_value
+                  )
+                  .as_str(),
+                )
+                .execute(&database)
+                .await
+                .expect("insert error");
+                database.close().await;
+                continue;
+              }
 
               let mut library_stringed: Vec<String> = vec![];
               for item in lib {
                 library_stringed.push(item);
               }
 
-              let mut raw_new_items: Vec<Library> = vec![];
-              let mut new_items: Vec<Library> = vec![];
-              let mut pre_season_items: Vec<Library> = vec![];
-              let mut pre_episode_items: Vec<Library> = vec![];
+              let mut raw_new_items: Vec<Item> = vec![];
+              let mut new_items: Vec<Item> = vec![];
+              let mut pre_season_items: Vec<Item> = vec![];
+              let mut pre_episode_items: Vec<Item> = vec![];
               for item in serialized_server.Items {
-                if ! library_stringed.contains(&item.Id) {
+                if !library_stringed.contains(&item.Id) {
                   raw_new_items.append(&mut vec![item.clone()]);
                   if item.Type == Type::Movie || item.Type == Type::Series {
                     new_items.append(&mut vec![item.clone()]);
                   } else if item.Type == Type::Season {
                     pre_season_items.append(&mut vec![item.clone()]);
                   } else if item.Type == Type::Episode || item.Type == Type::Special {
+                    if item.SeasonId.is_none() {
+                      // something's wrong. give jellyfin more time to find metadata to propagate this value.
+                      continue 'main;
+                    }
                     pre_episode_items.append(&mut vec![item.clone()]);
                   }
                 }
               }
 
               for season in pre_season_items.clone() {
-                if ! new_items.contains(season.SeriesId.clone().unwrap()) {
+                if !new_items.contains(season.SeriesId.clone().unwrap()) {
                   new_items.append(&mut vec![season.clone()]);
                 }
               }
 
-              for episode in pre_episode_items {
+              for episode in pre_episode_items.clone() {
                 if episode.SeasonId.clone().is_none() {
                   break;
                 }
-                if ! new_items.contains(episode.SeasonId.clone().unwrap()) &&
-                ! new_items.contains(episode.SeriesId.clone().unwrap()) {
+                if !new_items.contains(episode.SeasonId.clone().unwrap())
+                  && !new_items.contains(episode.SeriesId.clone().unwrap())
+                {
                   new_items.append(&mut vec![episode.clone()]);
                 }
               }
 
-              for x in new_items.clone() {
+              new_items.reverse();
+              for x in new_items {
+                if let Some(streams) = x.MediaStreams.clone() {
+                  if streams.is_empty() {
+                    continue;
+                  }
+                }
+
                 if x.Type == Type::Episode || x.Type == Type::Special || x.Type == Type::Movie {
-                  let image = format!("{}/Items/{}/Images/Primary?api_key={}&Quality=100", server.domain, x.clone().SeasonId.unwrap_or(x.clone().Id), server.token);
-                  let (resolution, languages) = if x.MediaStreams.is_some() {
+                  let name = x.to_string();
+                  let image = format!(
+                    "{}/Items/{}/Images/Primary?api_key={}&Quality=100",
+                    server.domain,
+                    x.clone().SeasonId.unwrap_or(x.clone().Id),
+                    server.token
+                  );
+                  let (resolution, a_languages, s_languages) = if x.MediaStreams.is_some() {
                     let mut height: String = String::new();
-                    let mut languages: String = String::new();
+                    let mut a_languages: String = String::new();
+                    let mut s_languages: String = String::new();
+                    let mut scan_type: char = 'p';
                     for x in x.MediaStreams.unwrap() {
                       if x.Type == "Video" {
                         height = x.Height.unwrap().to_string();
-                      }
-                      if x.Type == "Audio" {
-                        languages.push_str(&(x.Language.unwrap_or("?".to_string())+", "))
+                        if x.IsInterlaced {
+                          scan_type = 'i';
+                        }
+                      } else if x.Type == "Audio" {
+                        a_languages.push_str(&(x.Language.unwrap_or("?".to_string()) + ", "))
+                      } else if x.Type == "Subtitle" {
+                        s_languages.push_str(&(x.Language.unwrap_or("?".to_string()) + ", "))
                       }
                     }
                     if height.is_empty() {
                       height = "?".to_string()
                     }
-                    if languages.is_empty() {
-                      languages = "?".to_string()
-                    } else if languages != *"?" {
-                      languages = languages.strip_suffix(", ").unwrap().to_string();
+                    if a_languages.is_empty() {
+                      a_languages = "?".to_string()
+                    } else if a_languages != *"?" {
+                      a_languages = a_languages.strip_suffix(", ").unwrap().to_string();
                     }
-                    (height+"p", languages)
+                    if s_languages != *"?" && !s_languages.is_empty() {
+                      s_languages = s_languages.strip_suffix(", ").unwrap().to_string();
+                    } else {
+                      s_languages = String::new()
+                    }
+                    height.push(scan_type);
+                    (height, a_languages, s_languages)
                   } else {
-                    ("?".to_string(), "?".to_string())
+                    ("?".to_string(), "?".to_string(), String::new())
                   };
                   let runtime: String = if x.RunTimeTicks.is_some() {
                     let time = (x.RunTimeTicks.unwrap() as f64) / 10000000.0;
                     let formated: String = if time > 60.0 {
                       if (time / 60.0) > 60.0 {
-                          format!("{:02}:{:02}:{:02}", ((time / 60.0) / 60.0).trunc(), ((((time / 60.0) / 60.0) - ((time / 60.0) / 60.).trunc()) * 60.0).trunc(), (((time / 60.0) - (time / 60.0).trunc()) * 60.0).trunc())
+                        format!(
+                          "{:02}:{:02}:{:02}",
+                          ((time / 60.0) / 60.0).trunc(),
+                          ((((time / 60.0) / 60.0) - ((time / 60.0) / 60.).trunc()) * 60.0).trunc(),
+                          (((time / 60.0) - (time / 60.0).trunc()) * 60.0).trunc()
+                        )
                       } else {
-                          format!("00:{:02}:{:02}", (time / 60.0).trunc(), (((time / 60.0) - (time / 60.0).trunc()) * 60.0).trunc())
+                        format!(
+                          "00:{:02}:{:02}",
+                          (time / 60.0).trunc(),
+                          (((time / 60.0) - (time / 60.0).trunc()) * 60.0).trunc()
+                        )
                       }
                     } else {
-                        format!("00:00:{time:02}")
+                      format!("00:00:{time:02}")
                     };
                     formated
                   } else {
                     "?".to_string()
                   };
-                  let name = if x.Type == Type::Episode || x.Type == Type::Special {
-                    format!("{} - {} - {}", x.SeriesName.unwrap_or("?".to_string()), x.SeasonName.unwrap_or("?".to_string()), x.Name.unwrap_or("?".to_string()))
-                  } else {
-                    x.Name.unwrap_or("?".to_string())
-                  };
 
-                  let res = ChannelId(server.channel_id as u64)
-                    .send_message(&ctx, |m| {
-                      m.embed(|e| {
-                        e.title(name)
-                        .image(image)
-                      }).add_embed(|e| {
-                        e.field(":star: — Rating".to_string(), if x.CommunityRating.is_some() { x.CommunityRating.unwrap().to_string() } else { "?".to_string() }, true)
-                        .field(":film_frames: — Runtime".to_string(), runtime, true)
-                        .field(":frame_photo: — Resolution".to_string(), resolution, true)
-                        .field(":loud_sound: — Languages".to_string(), languages, false)
-                      })
-                  }).await;
+                  let mut fields = Vec::new();
+                  fields.push((
+                    ":star: — Rating".to_string(),
+                    if x.CommunityRating.is_some() {
+                      x.CommunityRating.unwrap().to_string()
+                    } else {
+                      "?".to_string()
+                    },
+                    true,
+                  ));
+                  fields.push((
+                    ":film_frames: — Runtime".to_string(),
+                    runtime.to_string(),
+                    true,
+                  ));
+                  fields.push((
+                    ":frame_photo: — Resolution".to_string(),
+                    resolution.to_string(),
+                    true,
+                  ));
+                  fields.push((
+                    ":loud_sound: — Languages".to_string(),
+                    a_languages.to_string(),
+                    false,
+                  ));
 
-                  if let Err(why) = res {
-                    eprintln!("Error sending message: {why:?}");
-                  } else {
-                    let database = sqlx::sqlite::SqlitePoolOptions::new()
-                      .max_connections(5)
-                      .connect_with(
-                      sqlx::sqlite::SqliteConnectOptions::new()
-                      .filename("jellycord.sqlite")
-                      .create_if_missing(true),
-                    ).await
-                    .expect("Couldn't connect to database");
-                    sqlx::query(format!("INSERT INTO LIBRARY ({:?}) VALUES (\"{}\")", &server.user_id, &x.Id).as_str()).execute(&database)
-                    .await.expect("insert error");
+                  if !s_languages.is_empty() {
+                    fields.push((
+                      ":notepad_spiral: — Languages".to_string(),
+                      s_languages.to_string(),
+                      false,
+                    ));
                   }
-                } else {
-                  let image = format!("{}/Items/{}/Images/Primary?api_key={}&Quality=100", server.domain, x.clone().SeasonId.unwrap_or(x.clone().Id), server.token);
-                  let name = if x.Type == Type::Season {
-                    format!("{} - {}", x.SeriesName.unwrap(), x.Name.unwrap())
-                  } else {
-                    x.Name.unwrap()
-                  };
 
-                  let res = ChannelId(server.channel_id as u64)
-                    .send_message(&ctx, |m| {
-                      m.embed(|e| {
-                        e.title(name)
-                        .image(image)
-                      })
-                  }).await;
+                  let mut embed = CreateEmbed::default();
+                  for (name, value, inline) in &fields {
+                    embed = embed.field(name.clone(), value.clone(), *inline);
+                  }
+
+                  let res = ChannelId::new(server.channel_id as u64)
+                    .send_message(
+                      &ctx,
+                      CreateMessage::new()
+                        .add_embed(CreateEmbed::new().title(name).image(image))
+                        .add_embed(embed),
+                    )
+                    .await;
 
                   if let Err(why) = res {
                     eprintln!("Error sending message: {why:?}");
@@ -255,45 +442,276 @@ impl EventHandler for Handler {
                     let database = sqlx::sqlite::SqlitePoolOptions::new()
                       .max_connections(5)
                       .connect_with(
-                      sqlx::sqlite::SqliteConnectOptions::new()
-                      .filename("jellycord.sqlite")
-                      .create_if_missing(true),
-                    ).await
-                    .expect("Couldn't connect to database");
-                    sqlx::query(format!("INSERT INTO LIBRARY ({:?}) VALUES (\"{}\")", &server.user_id, &x.Id).as_str()).execute(&database)
-                    .await.expect("insert error");
+                        sqlx::sqlite::SqliteConnectOptions::new()
+                          .filename("jellycord.sqlite")
+                          .create_if_missing(true),
+                      )
+                      .await
+                      .expect("Couldn't connect to database");
+                    sqlx::query(
+                      format!(
+                        "INSERT INTO LIBRARY ({:?}) VALUES (\"{}\")",
+                        &server.user_id, &x.Id
+                      )
+                      .as_str(),
+                    )
+                    .execute(&database)
+                    .await
+                    .expect("insert error");
+                  }
+                } else if x.Type == Type::Season || x.Type == Type::Series {
+                  let seasons = if x.Type == Type::Series {
+                    let mut temp = vec![];
+                    for season in pre_season_items.clone() {
+                      if season.SeriesId.clone().unwrap() == x.Id {
+                        temp.push(season);
+                      }
+                    }
+                    temp
+                  } else {
+                    vec![x.clone()]
+                  };
+
+                  let mut runtimes: Vec<u64> = vec![];
+                  let mut ratings: Vec<f64> = vec![];
+                  let mut resolutions: Vec<String> = vec![];
+                  let mut a_languages: Vec<String> = vec![];
+                  let mut s_languages: Vec<String> = vec![];
+                  for season in seasons {
+                    for episode in pre_episode_items.clone() {
+                      if episode.SeasonId.unwrap() == season.Id {
+                        if let Some(runtime) = episode.RunTimeTicks {
+                          runtimes.push(runtime);
+                        }
+                        if let Some(rating) = episode.CommunityRating {
+                          if rating != 0.0 {
+                            ratings.push(rating);
+                          }
+                        }
+                        if let Some(mediastreams) = episode.MediaStreams {
+                          let mut height = String::new();
+                          let mut scan_type: char = 'p';
+                          for x in mediastreams {
+                            if x.Type == "Video" {
+                              height = x.Height.unwrap().to_string();
+                              if x.IsInterlaced {
+                                scan_type = 'i';
+                              }
+                            } else if x.Type == "Audio" {
+                              let lang = x.Language.unwrap_or("?".to_string());
+                              if !a_languages.contains(&lang) {
+                                a_languages.push(lang);
+                              }
+                            } else if x.Type == "Subtitle" {
+                              let lang = x.Language.unwrap_or("?".to_string());
+                              if !s_languages.contains(&lang) {
+                                s_languages.push(lang);
+                              }
+                            }
+                          }
+                          if height.is_empty() {
+                            height = "?".to_string()
+                          }
+                          height.push(scan_type);
+                          if !resolutions.contains(&height) {
+                            resolutions.push(height);
+                          }
+                        }
+                      }
+                    }
+                  }
+                  let image = format!(
+                    "{}/Items/{}/Images/Primary?api_key={}&Quality=100",
+                    server.domain,
+                    x.clone().SeasonId.unwrap_or(x.clone().Id),
+                    server.token
+                  );
+                  let name = x.to_string();
+
+                  let avg_rating = if !ratings.is_empty() {
+                    let mut total = 0.0;
+                    for x in ratings.clone() {
+                      total += x;
+                    }
+                    format!("{:.2}", total / ratings.len() as f64)
+                  } else {
+                    String::from("?")
+                  };
+
+                  let total_runtime = if !runtimes.is_empty() {
+                    let mut total = 0;
+                    for x in runtimes {
+                      total += x;
+                    }
+                    let time = (total as f64) / 10000000.0;
+                    let runtime: String = if time > 60.0 {
+                      if (time / 60.0) > 60.0 {
+                        format!(
+                          "{:02}:{:02}:{:02}",
+                          ((time / 60.0) / 60.0).trunc(),
+                          ((((time / 60.0) / 60.0) - ((time / 60.0) / 60.).trunc()) * 60.0).trunc(),
+                          (((time / 60.0) - (time / 60.0).trunc()) * 60.0).trunc()
+                        )
+                      } else {
+                        format!(
+                          "00:{:02}:{:02}",
+                          (time / 60.0).trunc(),
+                          (((time / 60.0) - (time / 60.0).trunc()) * 60.0).trunc()
+                        )
+                      }
+                    } else {
+                      format!("00:00:{time:02}")
+                    };
+                    runtime
+                  } else {
+                    String::from("?")
+                  };
+
+                  let resolution_list = if !resolutions.is_empty() {
+                    let mut temp = String::new();
+                    for (index, x) in resolutions.iter().enumerate() {
+                      if index > 50 {
+                        break;
+                      }
+                      temp.push_str(&(x.to_owned() + ", "));
+                    }
+                    temp.strip_suffix(", ").unwrap().to_string()
+                  } else {
+                    String::from("?")
+                  };
+
+                  let a_languages_list = if !a_languages.is_empty() {
+                    let mut temp = String::new();
+                    for (index, x) in a_languages.iter().enumerate() {
+                      if index > 50 {
+                        break;
+                      }
+                      temp.push_str(&(x.to_owned() + ", "));
+                    }
+                    temp.strip_suffix(", ").unwrap().to_string()
+                  } else {
+                    String::from("?")
+                  };
+
+                  let s_languages_list = if !s_languages.is_empty() {
+                    let mut temp = String::new();
+                    for (index, x) in s_languages.iter().enumerate() {
+                      if index > 50 {
+                        break;
+                      }
+                      temp.push_str(&(x.to_owned() + ", "));
+                    }
+                    temp.strip_suffix(", ").unwrap().to_string()
+                  } else {
+                    String::from("?")
+                  };
+
+                  let mut fields = vec![
+                    (":star: — Rating".to_string(), avg_rating, true),
+                    (":film_frames: — Runtime".to_string(), total_runtime, true),
+                    (
+                      ":frame_photo: — Resolution".to_string(),
+                      resolution_list,
+                      true,
+                    ),
+                    (
+                      ":loud_sound: — Languages".to_string(),
+                      a_languages_list,
+                      false,
+                    ),
+                  ];
+
+                  if !s_languages_list.is_empty() {
+                    fields.push((
+                      ":notepad_spiral: — Languages".to_string(),
+                      s_languages_list,
+                      false,
+                    ));
+                  }
+
+                  let mut embed = CreateEmbed::default();
+                  for (name, value, inline) in &fields {
+                    embed = embed.field(name.clone(), value.clone(), *inline);
+                  }
+
+                  let res = ChannelId::new(server.channel_id as u64)
+                    .send_message(
+                      &ctx,
+                      CreateMessage::new()
+                        .add_embed(CreateEmbed::new().title(name).image(image))
+                        .add_embed(embed),
+                    )
+                    .await;
+
+                  if let Err(why) = res {
+                    eprintln!("Error sending message: {why:?}");
+                  } else {
+                    let database = sqlx::sqlite::SqlitePoolOptions::new()
+                      .max_connections(5)
+                      .connect_with(
+                        sqlx::sqlite::SqliteConnectOptions::new()
+                          .filename("jellycord.sqlite")
+                          .create_if_missing(true),
+                      )
+                      .await
+                      .expect("Couldn't connect to database");
+                    sqlx::query(
+                      format!(
+                        "INSERT INTO LIBRARY ({:?}) VALUES (\"{}\")",
+                        &server.user_id, &x.Id
+                      )
+                      .as_str(),
+                    )
+                    .execute(&database)
+                    .await
+                    .expect("insert error");
                     if x.Type == Type::Series {
                       for item in raw_new_items.clone() {
                         if item.SeriesId == Some(x.Id.clone()) {
-                          sqlx::query(format!("INSERT INTO LIBRARY ({:?}) VALUES (\"{}\")", &server.user_id, &item.Id).as_str()).execute(&database)
-                          .await.expect("insert error");
+                          sqlx::query(
+                            format!(
+                              "INSERT INTO LIBRARY ({:?}) VALUES (\"{}\")",
+                              &server.user_id, &item.Id
+                            )
+                            .as_str(),
+                          )
+                          .execute(&database)
+                          .await
+                          .expect("insert error");
                         }
                       }
                     } else if x.Type == Type::Season {
                       for item in raw_new_items.clone() {
                         if item.SeasonId == Some(x.Id.clone()) {
-                          sqlx::query(format!("INSERT INTO LIBRARY ({:?}) VALUES (\"{}\")", &server.user_id, &item.Id).as_str()).execute(&database)
-                          .await.expect("insert error");
+                          sqlx::query(
+                            format!(
+                              "INSERT INTO LIBRARY ({:?}) VALUES (\"{}\")",
+                              &server.user_id, &item.Id
+                            )
+                            .as_str(),
+                          )
+                          .execute(&database)
+                          .await
+                          .expect("insert error");
                         }
                       }
                     }
                   }
                 }
-              };
+              }
             } else {
               eprintln!("Failed to connect to the server. {}", server.domain);
-              tokio::time::sleep(Duration::from_secs(2)).await; // Don't ddos the dns server.
-              continue
+              tokio::time::sleep(Duration::from_secs(5)).await; // Don't ddos the dns server.
+              continue;
             }
-          };
+          }
           tokio::time::sleep(Duration::from_secs(300)).await;
-        };
+        }
       });
       self.is_loop_running.swap(true, Ordering::Relaxed);
     }
   }
 }
-
 
 #[tokio::main]
 async fn main() {
@@ -307,23 +725,27 @@ async fn main() {
     )
     .await
     .expect("Couldn't connect to database");
-  sqlx::migrate!("./migrations").run(&database).await.expect("Couldn't run database migrations");
+  sqlx::migrate!("./migrations")
+    .run(&database)
+    .await
+    .expect("Couldn't run database migrations");
   database.close().await;
   if env::var("SETUP") == Ok("1".to_string()) {
     exit(0x100);
   };
-  let settings_file_raw = Config::builder().add_source(File::from(Path::new(&"./jellycord.yaml".to_string()))).build().unwrap();
-  let serialized = settings_file_raw.try_deserialize::<ConfigFile>().expect("Reading config file.");
+  let settings_file_raw = Config::builder()
+    .add_source(File::from(Path::new(&"./jellycord.yaml".to_string())))
+    .build()
+    .unwrap();
+  let serialized = settings_file_raw
+    .try_deserialize::<ConfigFile>()
+    .expect("Reading config file.");
   loop {
-    let framework = StandardFramework::new()
-      .configure(|c| c.prefix(serialized.command_prefix.unwrap_or('~'))) 
-      .group(&GENERAL_GROUP);
     let intents = GatewayIntents::non_privileged() | GatewayIntents::MESSAGE_CONTENT;
     let client = Client::builder(serialized.discord_token.clone(), intents)
       .event_handler(Handler {
         is_loop_running: AtomicBool::new(false),
       })
-      .framework(framework)
       .await;
     if client.is_err() {
       println!("Error creating discord client. Retrying in 60 seconds...");
@@ -336,251 +758,34 @@ async fn main() {
   }
 }
 
+async fn get_serialized_page(url: String) -> Result<MediaResponse, ()> {
+  let client = reqwest::Client::new();
+  let web_request = client
+    .get(url)
+    .timeout(Duration::from_secs(120))
+    .header("Content-Type", "application/json")
+    .send()
+    .await;
 
-#[command]
-async fn help(ctx: &Context, msg: &Message) -> CommandResult {
-  let _help_ = "```\
-[JellyCord]
-
-Commands:
-  \"init\" - Initialize current channel and setup jellyfin connection
-  \"dump\" - Break jellyfin connection for the current channel
-  \"pause\" - Don't check for any updates, regarding this channel
-  \"unpause\" - Reactivate announcements
-```";
-  msg.reply(ctx, _help_).await?;
-
-  Ok(())
-}
-
-
-#[command]
-async fn init(ctx: &Context, msg: &Message) -> CommandResult {
-  let channel_id = msg.channel_id.0 as i64;
-  let thread = msg.channel_id.create_public_thread(ctx, msg.id, |t| t.name("JellyCord - Initialize")).await?;
-  thread.say(ctx, "Please enter your jellyfin/emby address.\nYou can stop this process by typing \"quit\" right now.").await?;
-  loop {
-    let user_reply = msg.author.await_reply(ctx).await.unwrap();
-    let database = sqlx::sqlite::SqlitePoolOptions::new()
-        .max_connections(5)
-        .connect_with(
-          sqlx::sqlite::SqliteConnectOptions::new()
-            .filename("jellycord.sqlite")
-            .create_if_missing(true),
-        )
-        .await
-        .expect("Couldn't connect to database");
-    let domain: Result<String, ()> = if user_reply.content == "quit" {
-      thread.delete(ctx).await?;
-      break
-    } else {
-      let end = if user_reply.content.ends_with('/') {
-        &user_reply.content[0..&user_reply.content.len() - 1]
-      } else {
-        &user_reply.content
-      };
-      Ok(end.to_string())
-    };
-    let domain = domain.unwrap();
-    let api_question = user_reply.reply(&ctx, "Please create an api token and enter it here.").await?;
-    let api_token = &msg.author.await_reply(ctx).await.unwrap();
-    api_token.delete(&ctx).await?;
-    api_question.delete(&ctx).await?;
-    let users_request = Request::get(format!("{}/Users?api_key={}", &domain, &api_token.content)).body(());
-    let users_response: Result<http::Response<_>, isahc::Error> = match users_request {
-      Ok(response) => {
-        response.send()
-      },
-      Err(_) => {
-        thread.say(&ctx, "The URL you've entered, seems to be of invalid format?\n- \"https://emby.yourdomain.com\"".to_string()).await?;
-        thread.say(ctx, "Please try again by entering your jellyfin/emby address.").await?;
-        continue
-      }
-    };
-    let users: Result<Vec<UserList>, String> = match users_response {
-      Ok(mut ok) => {
-        let serde_attempt = serde_json::from_str::<Vec<UserList>>(&ok.text().unwrap());
-        match serde_attempt {
-          Ok(ok) => Ok(ok),
-          Err(_) => {
-            thread.say(&ctx, "The request to retrieve available users failed.\nThis is likely due to an incorrect response. Is this really a supported mediaserver?".to_string()).await?;
-            thread.say(ctx, "Please try again by entering your jellyfin/emby address.").await?;
-            continue
-          }
-        }
-      },
-      Err(err) => {
-        thread.say(&ctx, format!("The request to retrieve available users failed. Try to add \"https://\"\nError: {err}").to_string()).await?;
-        thread.say(ctx, "Please try again by entering your jellyfin/emby address.").await?;
-        continue
-      }
-    };
-    thread.say(&ctx, "Received the token.\nNow enter the username, for which you would like to receive the notifications.").await?;
-    loop {
-      let username = &msg.author.await_reply(ctx).await.unwrap().content;
-      let mut user_id_raw: Option<String> = None;
-      for user in users.as_ref().unwrap().clone().into_iter() {
-        if user.Name.to_lowercase() == username.to_lowercase().trim() {
-          user_id_raw = Some(user.Id)
-        }
-      };
-      if user_id_raw.is_none() {
-        thread.say(&ctx, "Username could not be found, please enter a different one.").await?;
-      } else {
-        let user_id = user_id_raw.clone().unwrap();
-        if sqlx::query!(
-          "SELECT UserID FROM FRONT WHERE UserID=? AND Channel_ID=?",
-          user_id, channel_id,
-        ).fetch_one(&database).await.is_ok() {
-          msg.reply(&ctx, "This UserID has already been added.\nUse \"dump\" to recreate a connection.").await.unwrap();
-          break
-        };
-        let timed_response = get_serialized_page(format!("{}/Users/{}/Items?api_key={}&Recursive=true&IncludeItemTypes=Movie,Series,Episode,Season,Special&Fields=MediaStreams&collapseBoxSetItems=False", &domain, &user_id_raw.unwrap(), &api_token.content));
-        let serialized = match timed_response {
-          Ok(ok) => {
-            ok
-          },
-          Err(_) => {
-            continue
-          }
-        };
-        if sqlx::query(format!("SELECT {} FROM LIBRARY", &user_id).as_str()).fetch_one(&database).await.is_ok() {
-          sqlx::query(format!("ALTER TABLE LIBRARY RENAME COLUMN {:?} TO \"{}_{}\"", &user_id, &user_id, chrono::offset::Utc::now().timestamp()).as_str()).execute(&database).await.expect("couldn't rename database");
-        };
-        sqlx::query(
-          format!("ALTER TABLE LIBRARY ADD {:?} VARCHAR(30)", &user_id).as_str()).execute(&database)
-        .await.expect("insert error");
-        let mut id_as_value: String = String::new();
-        for item in serialized.clone().Items {
-          if &item == serialized.Items.last().unwrap() {
-            id_as_value.push_str(format!("(\"{}\")", item.Id).as_str());
-          } else {
-            id_as_value.push_str(format!("(\"{}\"),", item.Id).as_str());
-          }
-        };
-        sqlx::query(format!("INSERT INTO LIBRARY ({:?}) VALUES {}", &user_id, &id_as_value).as_str()).execute(&database)
-        .await.expect("insert error");
-        let add = Instance {
-          active_channel: 1,
-          channel_id,
-          domain,
-          token: api_token.content.clone(),
-          user_id: user_id.to_string(),
-        };
-        let channel_id = add.channel_id;
-        sqlx::query!(
-          "INSERT INTO FRONT (Active_Channel, Channel_ID, Domain, Token, UserID) VALUES (?1, ?2, ?3, ?4, ?5)",
-          add.active_channel, channel_id, add.domain, add.token, add.user_id).execute(&database)
-        .await.expect("insert error");
-        thread.say(&ctx, "Username has been found and added to the configuration.").await?;
-        break
-      }
-    }
-    database.close().await;
-    break
-  };
-  thread.delete(ctx).await?;
-  msg.delete(ctx).await?;
-  Ok(())
-}
-
-
-#[command]
-async fn dump(ctx: &Context, msg: &Message) -> CommandResult {
-  let database = sqlx::sqlite::SqlitePoolOptions::new()
-    .max_connections(5)
-    .connect_with(
-      sqlx::sqlite::SqliteConnectOptions::new()
-        .filename("jellycord.sqlite")
-        .create_if_missing(true),
-    )
-    .await
-    .expect("Couldn't connect to database");
-  let channel_id = msg.channel_id.0 as i64;
-  sqlx::query!(
-    "DELETE FROM FRONT WHERE Channel_ID=?",
-    channel_id).execute(&database)
-  .await.expect("dump error");
-  database.close().await;
-  msg.reply(&ctx, "Removed all connections for this channel.").await?;
-  Ok(())
-}
-
-#[command]
-async fn pause(ctx: &Context, msg: &Message) -> CommandResult {
-  let database = sqlx::sqlite::SqlitePoolOptions::new()
-    .max_connections(5)
-    .connect_with(
-      sqlx::sqlite::SqliteConnectOptions::new()
-        .filename("jellycord.sqlite")
-        .create_if_missing(true),
-    )
-    .await
-    .expect("Couldn't connect to database");
-  let channel_id = msg.channel_id.0 as i64;
-  sqlx::query!(
-    "UPDATE FRONT SET Active_Channel = 0 WHERE Channel_ID=?",
-    channel_id).execute(&database)
-    .await.expect("pause error");
-  database.close().await;
-  msg.reply(&ctx, "Paused all connections for this channel.").await?;
-  Ok(())
-}
-
-
-#[command]
-async fn unpause(ctx: &Context, msg: &Message) -> CommandResult {
-  let database = sqlx::sqlite::SqlitePoolOptions::new()
-    .max_connections(5)
-    .connect_with(
-      sqlx::sqlite::SqliteConnectOptions::new()
-        .filename("jellycord.sqlite")
-        .create_if_missing(true),
-    )
-    .await
-    .expect("Couldn't connect to database");
-  let channel_id = msg.channel_id.0 as i64;
-  sqlx::query!(
-    "UPDATE FRONT SET Active_Channel = 1 WHERE Channel_ID=?",
-    channel_id).execute(&database)
-    .await.expect("unpause error");
-  database.close().await;
-  msg.reply(&ctx, "Unpaused all connections for this channel.").await?;
-  Ok(())
-}
-
-
-#[command]
-async fn ping(ctx: &Context, msg: &Message) -> CommandResult {
-  msg.reply(ctx, "Pong!").await?;
-  Ok(())
-}
-
-
-fn get_serialized_page(url: String) -> Result<MediaResponse, ()> {
-  let web_request = Request::get(url).timeout(Duration::from_secs(120))
-  .header("Content-Type", "application/json")
-  .body(()).expect("Failed to create request. Maybe the link isn't correct.")
-  .send();
-  if web_request.is_err() {
+  let response = if let Err(res) = web_request {
+    eprintln!("Error: {}", res.to_string().as_str());
     return Err(());
-  }
-  let webpage_as_string = match web_request.as_ref().unwrap().status() {
-    StatusCode::OK => {
-      match web_request.unwrap().text() {
-        Ok(res) => res,
-        Err(_e) => {
-          return Err(())
-        }
-      }
-    },
-    _ => return Err(())
+  } else {
+    web_request.unwrap()
   };
+
+  let webpage_as_string = match response.text().await {
+    Ok(text) => text,
+    _ => {
+      return Err(());
+    },
+  };
+
   match serde_json::from_str::<MediaResponse>(&webpage_as_string) {
     Ok(serialized) => Ok(serialized),
     Err(e) => {
-      println!("{e}");
+      eprintln!("Error: {}", e);
       Err(())
-    }
+    },
   }
 }

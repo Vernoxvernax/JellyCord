@@ -323,10 +323,9 @@ impl EventHandler for Handler {
                 if x.Type == Type::Episode || x.Type == Type::Special || x.Type == Type::Movie {
                   let name = x.to_string();
                   let image = format!(
-                    "{}/Items/{}/Images/Primary?api_key={}&Quality=100",
+                    "{}/Items/{}/Images/Primary?Quality=100",
                     server.domain,
-                    x.clone().SeasonId.unwrap_or(x.clone().Id),
-                    server.token
+                    x.clone().SeasonId.unwrap_or(x.clone().Id)
                   );
                   let (resolution, a_languages, s_languages) = if x.MediaStreams.is_some() {
                     let mut height: String = String::new();

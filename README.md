@@ -29,8 +29,7 @@ ___
     * not if the Season object is new as well
 * Banners:
   * Are fetched from your server directly, so if the domain you've provided to the bot isn't publicly accessible, then pictures will fail (I think; well at least for users outside your network; but then what's the point of this anyway lol).
-  * Images on Emby and Jellyfin are retrieved using the API key, which is part of the URL of the image. Please be careful when sharing access to these messages as they grant access to all content on the media server.
-* If you got any recommendations for features, or the Image-API-Key-Problem, please let me know asap.
+* If you got any recommendations for features, please let me know.
 * Some updates may bring breaking changes to the library, which will require you to reset it, and it's channel.
   * I'm obviously trying to avoid that, but sometimes it's definitely necessary.
 ___

@@ -302,9 +302,6 @@ impl EventHandler for Handler {
               }
 
               for episode in pre_episode_items.clone() {
-                if episode.SeasonId.clone().is_none() {
-                  break;
-                }
                 if !new_items.contains(episode.SeasonId.clone().unwrap())
                   && !new_items.contains(episode.SeriesId.clone().unwrap())
                 {

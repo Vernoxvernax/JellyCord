@@ -87,11 +87,13 @@ trait LibraryTools {
   fn contains(&self, s: String) -> bool;
 }
 
-impl LibraryTools for Vec<Item> {
+impl LibraryTools for Vec<Vec<Item>> {
   fn contains(&self, s: String) -> bool {
-    for item in self.iter() {
-      if item.Id == s.clone() {
-        return true;
+    for itemlist in self.iter() {
+      for item in itemlist {
+        if item.Id == s.clone() {
+          return true;
+        }
       }
     }
     false
@@ -131,8 +133,8 @@ impl ToString for Item {
       "(???)".to_string()
     };
     let mut name: String;
-    match self.Type.to_string().as_str() {
-      "Season" | "Episode" => name = self.SeriesName.clone().unwrap_or(String::from("???")),
+    match self.Type {
+      Type::Season | Type::Episode => name = self.SeriesName.clone().unwrap_or(String::from("???")),
       _ => name = self.Name.clone(),
     }
     if name.contains('(') {
@@ -140,14 +142,14 @@ impl ToString for Item {
       name = re.replace_all(&name, "").to_string();
     }
 
-    match self.Type.to_string().as_str() {
-      "Movie" | "Series" => {
+    match self.Type {
+      Type::Movie | Type::Series => {
         format!("{} {}", name, time)
       },
-      "Season" => {
+      Type::Season => {
         format!("{} {} - {}", name, time, self.Name.clone())
       },
-      "Episode" => match self.IndexNumberEnd {
+      Type::Episode => match self.IndexNumberEnd {
         Some(indexend) => {
           format!(
             "{} {} - S{:02}E{:02}-{:02} - {}",
@@ -274,15 +276,17 @@ impl EventHandler for Handler {
                 library_stringed.push(item);
               }
 
-              let mut raw_new_items: Vec<Item> = vec![];
-              let mut new_items: Vec<Item> = vec![];
-              let mut pre_season_items: Vec<Item> = vec![];
-              let mut pre_episode_items: Vec<Item> = vec![];
-              for item in serialized_server.Items {
+              let mut raw_new_items: Vec<Item> = vec![]; // contains all new items
+              // new movies or series items; it will eventually get all new items from the for loops later
+              // type is a nested list to group episodes of the same season together while keeping the order mostly the same
+              let mut new_items: Vec<Vec<Item>> = vec![];
+              let mut pre_season_items: Vec<Item> = vec![]; // all new season items
+              let mut pre_episode_items: Vec<Item> = vec![]; // all new episode items
+              for item in &serialized_server.Items {
                 if !library_stringed.contains(&item.Id) {
                   raw_new_items.append(&mut vec![item.clone()]);
                   if item.Type == Type::Movie || item.Type == Type::Series {
-                    new_items.append(&mut vec![item.clone()]);
+                    new_items.push(vec![item.clone()]);
                   } else if item.Type == Type::Season {
                     pre_season_items.append(&mut vec![item.clone()]);
                   } else if item.Type == Type::Episode || item.Type == Type::Special {
@@ -297,7 +301,7 @@ impl EventHandler for Handler {
 
               for season in pre_season_items.clone() {
                 if !new_items.contains(season.SeriesId.clone().unwrap()) {
-                  new_items.append(&mut vec![season.clone()]);
+                  new_items.push(vec![season.clone()]);
                 }
               }
 
@@ -305,63 +309,333 @@ impl EventHandler for Handler {
                 if !new_items.contains(episode.SeasonId.clone().unwrap())
                   && !new_items.contains(episode.SeriesId.clone().unwrap())
                 {
-                  new_items.append(&mut vec![episode.clone()]);
+                  let mut inserted = false;
+                  for itemlist in new_items.iter_mut() {
+                    if itemlist[0].SeasonId == episode.SeasonId {
+                      itemlist.push(episode.clone());
+                      inserted = true;
+                    }
+                  }
+                  if !inserted {
+                    new_items.push(vec![episode.clone()]);
+                  }
                 }
               }
 
-              new_items.reverse();
-              for x in new_items {
-                if let Some(streams) = x.MediaStreams.clone() {
-                  if streams.is_empty() {
-                    continue;
-                  }
-                }
+              pre_episode_items.sort_by(|x, y| {
+                x.ParentIndexNumber
+                  .unwrap()
+                  .cmp(&y.ParentIndexNumber.unwrap())
+                  .then(x.IndexNumber.unwrap().cmp(&y.IndexNumber.unwrap()))
+              });
 
-                if x.Type == Type::Episode || x.Type == Type::Special || x.Type == Type::Movie {
-                  let name = x.to_string();
-                  let image = format!(
-                    "{}/Items/{}/Images/Primary?Quality=100",
-                    server.domain,
-                    x.clone().SeasonId.unwrap_or(x.clone().Id)
-                  );
-                  let (resolution, a_languages, s_languages) = if x.MediaStreams.is_some() {
-                    let mut height: String = String::new();
-                    let mut a_languages: String = String::new();
-                    let mut s_languages: String = String::new();
-                    let mut scan_type: char = 'p';
-                    for x in x.MediaStreams.unwrap() {
-                      if x.Type == "Video" {
-                        height = x.Height.unwrap().to_string();
-                        if x.IsInterlaced {
-                          scan_type = 'i';
+              new_items.reverse();
+
+              for itemlist in new_items.iter_mut() {
+                if itemlist.len() == 1 {
+                  let item = itemlist[0].clone();
+                  if let Some(streams) = item.MediaStreams.clone() {
+                    if streams.is_empty() {
+                      continue;
+                    }
+                  }
+
+                  if item.Type == Type::Episode
+                    || item.Type == Type::Special
+                    || item.Type == Type::Movie
+                  {
+                    let name = item.to_string();
+                    let image = format!(
+                      "{}/Items/{}/Images/Primary?Quality=100",
+                      server.domain,
+                      item.clone().SeasonId.unwrap_or(item.clone().Id)
+                    );
+                    let (resolution, a_languages, s_languages) = if item.MediaStreams.is_some() {
+                      let mut height: String = String::new();
+                      let mut a_languages: String = String::new();
+                      let mut s_languages: String = String::new();
+                      let mut scan_type: char = 'p';
+                      for x in item.MediaStreams.unwrap() {
+                        if x.Type == "Video" {
+                          height = x.Height.unwrap().to_string();
+                          if x.IsInterlaced {
+                            scan_type = 'i';
+                          }
+                        } else if x.Type == "Audio" {
+                          a_languages.push_str(&(x.Language.unwrap_or("?".to_string()) + ", "))
+                        } else if x.Type == "Subtitle" {
+                          s_languages.push_str(&(x.Language.unwrap_or("?".to_string()) + ", "))
                         }
-                      } else if x.Type == "Audio" {
-                        a_languages.push_str(&(x.Language.unwrap_or("?".to_string()) + ", "))
-                      } else if x.Type == "Subtitle" {
-                        s_languages.push_str(&(x.Language.unwrap_or("?".to_string()) + ", "))
+                      }
+                      if height.is_empty() {
+                        height = "?".to_string()
+                      }
+                      if a_languages.is_empty() {
+                        a_languages = "?".to_string()
+                      } else if a_languages != *"?" {
+                        a_languages = a_languages.strip_suffix(", ").unwrap().to_string();
+                      }
+                      if s_languages != *"?" && !s_languages.is_empty() {
+                        s_languages = s_languages.strip_suffix(", ").unwrap().to_string();
+                      } else {
+                        s_languages = String::new()
+                      }
+                      height.push(scan_type);
+                      (height, a_languages, s_languages)
+                    } else {
+                      ("?".to_string(), "?".to_string(), String::new())
+                    };
+                    let runtime: String = if item.RunTimeTicks.is_some() {
+                      let time = (item.RunTimeTicks.unwrap() as f64) / 10000000.0;
+                      let formated: String = if time > 60.0 {
+                        if (time / 60.0) > 60.0 {
+                          format!(
+                            "{:02}:{:02}:{:02}",
+                            ((time / 60.0) / 60.0).trunc(),
+                            ((((time / 60.0) / 60.0) - ((time / 60.0) / 60.).trunc()) * 60.0)
+                              .trunc(),
+                            (((time / 60.0) - (time / 60.0).trunc()) * 60.0).trunc()
+                          )
+                        } else {
+                          format!(
+                            "00:{:02}:{:02}",
+                            (time / 60.0).trunc(),
+                            (((time / 60.0) - (time / 60.0).trunc()) * 60.0).trunc()
+                          )
+                        }
+                      } else {
+                        format!("00:00:{time:02}")
+                      };
+                      formated
+                    } else {
+                      "?".to_string()
+                    };
+
+                    let mut fields = Vec::new();
+                    fields.push((
+                      ":star: — Rating".to_string(),
+                      if let Some(rating) = item.CommunityRating {
+                        format!("{:.2}", rating)
+                      } else {
+                        "?".to_string()
+                      },
+                      true,
+                    ));
+                    fields.push((
+                      ":film_frames: — Runtime".to_string(),
+                      runtime.to_string(),
+                      true,
+                    ));
+                    fields.push((
+                      ":frame_photo: — Resolution".to_string(),
+                      resolution.to_string(),
+                      true,
+                    ));
+                    fields.push((
+                      ":loud_sound: — Languages".to_string(),
+                      a_languages.to_string(),
+                      false,
+                    ));
+
+                    if !s_languages.is_empty() {
+                      fields.push((
+                        ":notepad_spiral: — Languages".to_string(),
+                        s_languages.to_string(),
+                        false,
+                      ));
+                    }
+
+                    let mut embed = CreateEmbed::default();
+                    for (name, value, inline) in &fields {
+                      embed = embed.field(name.clone(), value.clone(), *inline);
+                    }
+
+                    let res = ChannelId::new(server.channel_id as u64)
+                      .send_message(
+                        &ctx,
+                        CreateMessage::new()
+                          .add_embed(CreateEmbed::new().title(name).image(image))
+                          .add_embed(embed),
+                      )
+                      .await;
+
+                    if let Err(why) = res {
+                      eprintln!("Error sending message: {why:?}");
+                    } else {
+                      let database = sqlx::sqlite::SqlitePoolOptions::new()
+                        .max_connections(5)
+                        .connect_with(
+                          sqlx::sqlite::SqliteConnectOptions::new()
+                            .filename("jellycord.sqlite")
+                            .create_if_missing(true),
+                        )
+                        .await
+                        .expect("Couldn't connect to database");
+                      sqlx::query(
+                        format!(
+                          "INSERT INTO LIBRARY ({:?}) VALUES (\"{}\")",
+                          &server.user_id, &item.Id
+                        )
+                        .as_str(),
+                      )
+                      .execute(&database)
+                      .await
+                      .expect("insert error");
+                    }
+                  } else if item.Type == Type::Season || item.Type == Type::Series {
+                    let mut ids: Vec<String> = vec![item.Id.clone()];
+                    let seasons = if item.Type == Type::Series {
+                      let mut temp = vec![];
+                      for season in pre_season_items.clone() {
+                        if season.SeriesId.clone().unwrap() == item.Id {
+                          ids.push(season.Id.clone());
+                          temp.push(season);
+                        }
+                      }
+                      temp
+                    } else {
+                      vec![item.clone()]
+                    };
+
+                    let mut desc = String::new();
+                    let mut a_languages: Vec<String> = vec![];
+                    let mut s_languages: Vec<String> = vec![];
+                    let mut v_resolutions: Vec<String> = vec![];
+                    let mut ratings: Vec<f64> = vec![];
+                    let mut total_runtime: u64 = 0;
+
+                    let mut current_start = -1;
+                    for season in seasons {
+                      for (i, episode) in pre_episode_items.clone().iter().enumerate() {
+                        if episode.SeasonId.clone().unwrap() != season.Id {
+                          continue;
+                        }
+
+                        ids.push(episode.Id.clone());
+
+                        if let Some(mediastreams) = &episode.MediaStreams {
+                          for x in mediastreams {
+                            if x.Type == "Video" {
+                              let resolution: String;
+                              let scan_type: char;
+
+                              if x.IsInterlaced {
+                                scan_type = 'i';
+                              } else {
+                                scan_type = 'p';
+                              }
+
+                              if let Some(height) = x.Height {
+                                resolution = height.to_string() + &scan_type.to_string();
+                              } else {
+                                resolution = String::from("?") + &scan_type.to_string();
+                              }
+
+                              if !v_resolutions.contains(&resolution) {
+                                v_resolutions.push(resolution);
+                              }
+                            } else if x.Type == "Audio" {
+                              let lang = x.Language.clone().unwrap_or("?".to_string());
+                              if !a_languages.contains(&lang) {
+                                a_languages.push(lang);
+                              }
+                            } else if x.Type == "Subtitle" {
+                              let lang = x.Language.clone().unwrap_or("?".to_string());
+                              if !s_languages.contains(&lang) {
+                                s_languages.push(lang);
+                              }
+                            }
+                          }
+                        }
+
+                        if let Some(runtime) = episode.RunTimeTicks {
+                          total_runtime += runtime;
+                        }
+
+                        if let Some(rating) = episode.CommunityRating {
+                          ratings.push(rating);
+                        }
+
+                        let index_start = episode.IndexNumber.unwrap() as i32;
+                        let index_end = if let Some(end) = episode.IndexNumberEnd {
+                          end as i32
+                        } else {
+                          index_start
+                        };
+                        let item_name_full = match episode.IndexNumberEnd {
+                          Some(indexend) => {
+                            format!(
+                              "S{:02}E{:02}-{:02}",
+                              episode.ParentIndexNumber.unwrap_or(0),
+                              episode.IndexNumber.unwrap_or(0),
+                              indexend
+                            )
+                          },
+                          None => {
+                            format!(
+                              "S{:02}E{:02}",
+                              episode.ParentIndexNumber.unwrap_or(0),
+                              episode.IndexNumber.unwrap_or(0)
+                            )
+                          },
+                        };
+                        let item_name_end = match episode.IndexNumberEnd {
+                          Some(indexend) => {
+                            format!(
+                              "S{:02}E{:02}",
+                              episode.ParentIndexNumber.unwrap_or(0),
+                              indexend
+                            )
+                          },
+                          None => {
+                            format!(
+                              "S{:02}E{:02}",
+                              episode.ParentIndexNumber.unwrap_or(0),
+                              episode.IndexNumber.unwrap_or(0)
+                            )
+                          },
+                        };
+                        let item_name_start = format!(
+                          "S{:02}E{:02}",
+                          episode.ParentIndexNumber.unwrap_or(0),
+                          episode.IndexNumber.unwrap_or(0)
+                        );
+
+                        if pre_episode_items.len() - 1 == i {
+                          if current_start == -1 {
+                            desc.push_str(&format!("{}", item_name_full));
+                          } else {
+                            desc.push_str(&format!("-{}", item_name_end));
+                          }
+                        } else if i == 0 || current_start == -1 {
+                          if pre_episode_items[i + 1].IndexNumber.unwrap() as i32 != index_end + 1 {
+                            desc.push_str(&format!("{}, ", item_name_full));
+                            current_start = -1;
+                            continue;
+                          } else {
+                            desc.push_str(&item_name_start);
+                          }
+                        } else if pre_episode_items[i + 1].IndexNumber.unwrap() as i32
+                          != index_end + 1
+                        {
+                          desc.push_str(&format!("-{}, ", item_name_end));
+                          current_start = -1;
+                          continue;
+                        }
+                        current_start = index_start;
                       }
                     }
-                    if height.is_empty() {
-                      height = "?".to_string()
-                    }
-                    if a_languages.is_empty() {
-                      a_languages = "?".to_string()
-                    } else if a_languages != *"?" {
-                      a_languages = a_languages.strip_suffix(", ").unwrap().to_string();
-                    }
-                    if s_languages != *"?" && !s_languages.is_empty() {
-                      s_languages = s_languages.strip_suffix(", ").unwrap().to_string();
-                    } else {
-                      s_languages = String::new()
-                    }
-                    height.push(scan_type);
-                    (height, a_languages, s_languages)
-                  } else {
-                    ("?".to_string(), "?".to_string(), String::new())
-                  };
-                  let runtime: String = if x.RunTimeTicks.is_some() {
-                    let time = (x.RunTimeTicks.unwrap() as f64) / 10000000.0;
-                    let formated: String = if time > 60.0 {
+
+                    let image = format!(
+                      "{}/Items/{}/Images/Primary?api_key={}&Quality=100",
+                      server.domain,
+                      item.clone().SeasonId.unwrap_or(item.clone().Id),
+                      server.token
+                    );
+                    let name = item.to_string();
+
+                    let time = (total_runtime as f64) / 10000000.0;
+                    let formatted_runtime: String = if time > 60.0 {
                       if (time / 60.0) > 60.0 {
                         format!(
                           "{:02}:{:02}:{:02}",
@@ -379,41 +653,293 @@ impl EventHandler for Handler {
                     } else {
                       format!("00:00:{time:02}")
                     };
-                    formated
+
+                    let mut fields = Vec::new();
+                    fields.push((
+                      ":star: — Rating".to_string(),
+                      format!("{:.2}", ratings.iter().sum::<f64>() / ratings.len() as f64),
+                      true,
+                    ));
+                    fields.push((
+                      ":film_frames: — Runtime".to_string(),
+                      formatted_runtime.to_string(),
+                      true,
+                    ));
+                    fields.push((
+                      ":frame_photo: — Resolution".to_string(),
+                      v_resolutions.join(", "),
+                      true,
+                    ));
+                    fields.push((
+                      ":loud_sound: — Languages".to_string(),
+                      // 205 is the exact max amount of langs to show (they should all be 3 chars long)
+                      a_languages
+                        .iter()
+                        .take(205)
+                        .map(|s| s.as_str())
+                        .collect::<Vec<&str>>()
+                        .join(", "),
+                      false,
+                    ));
+
+                    if !s_languages.is_empty() {
+                      fields.push((
+                        ":notepad_spiral: — Languages".to_string(),
+                        s_languages
+                          .iter()
+                          .take(205)
+                          .map(|s| s.as_str())
+                          .collect::<Vec<&str>>()
+                          .join(", "),
+                        false,
+                      ));
+                    }
+
+                    let mut embed = CreateEmbed::default();
+                    for (name, value, inline) in &fields {
+                      embed = embed.field(name.clone(), value.clone(), *inline);
+                    }
+
+                    let res = ChannelId::new(server.channel_id as u64)
+                      .send_message(
+                        &ctx,
+                        CreateMessage::new()
+                          .add_embed(
+                            CreateEmbed::new()
+                              .title(name)
+                              .image(image)
+                              .description(desc),
+                          )
+                          .add_embed(embed),
+                      )
+                      .await;
+
+                    if let Err(why) = res {
+                      eprintln!("Error sending message: {why:?}");
+                    } else {
+                      for x in ids {
+                        let database = sqlx::sqlite::SqlitePoolOptions::new()
+                          .max_connections(5)
+                          .connect_with(
+                            sqlx::sqlite::SqliteConnectOptions::new()
+                              .filename("jellycord.sqlite")
+                              .create_if_missing(true),
+                          )
+                          .await
+                          .expect("Couldn't connect to database");
+                        sqlx::query(
+                          format!(
+                            "INSERT INTO LIBRARY ({:?}) VALUES (\"{}\")",
+                            &server.user_id, &x
+                          )
+                          .as_str(),
+                        )
+                        .execute(&database)
+                        .await
+                        .expect("insert error");
+                      }
+                    }
+                  }
+                } else {
+                  let series_id = itemlist[0].SeriesId.clone().unwrap();
+                  let mut item: Item = itemlist[0].clone();
+                  for x in &serialized_server.Items {
+                    if x.Id == series_id {
+                      item = x.clone();
+                      break;
+                    }
+                  }
+                  if item.Type != Type::Series {
+                    eprintln!(
+                      "Failed to find a Series object that belongs to \"{}\"",
+                      item.Id
+                    );
+                    continue;
+                  }
+
+                  itemlist.sort_by_key(|i| i.IndexNumber.unwrap());
+                  let mut desc = String::new();
+                  let mut a_languages: Vec<String> = vec![];
+                  let mut s_languages: Vec<String> = vec![];
+                  let mut v_resolutions: Vec<String> = vec![];
+                  let mut ratings: Vec<f64> = vec![];
+                  let mut total_runtime: u64 = 0;
+
+                  let mut current_start: i32 = -1;
+                  for (i, episode) in itemlist.iter().enumerate() {
+                    if episode.MediaStreams.is_some() {
+                      for x in episode.MediaStreams.clone().unwrap() {
+                        if x.Type == "Video" {
+                          let resolution: String;
+                          let scan_type: char;
+
+                          if x.IsInterlaced {
+                            scan_type = 'i';
+                          } else {
+                            scan_type = 'p';
+                          }
+
+                          if let Some(height) = x.Height {
+                            resolution = height.to_string() + &scan_type.to_string();
+                          } else {
+                            resolution = String::from("?") + &scan_type.to_string();
+                          }
+
+                          if !v_resolutions.contains(&resolution) {
+                            v_resolutions.push(resolution);
+                          }
+                        } else if x.Type == "Audio" {
+                          let lang = x.Language.unwrap_or("?".to_string());
+                          if !a_languages.contains(&lang) {
+                            a_languages.push(lang);
+                          }
+                        } else if x.Type == "Subtitle" {
+                          let lang = x.Language.unwrap_or("?".to_string());
+                          if !s_languages.contains(&lang) {
+                            s_languages.push(lang);
+                          }
+                        }
+                      }
+                    }
+
+                    if let Some(rating) = episode.CommunityRating {
+                      ratings.push(rating);
+                    }
+
+                    if let Some(runtime) = episode.RunTimeTicks {
+                      total_runtime += runtime;
+                    }
+
+                    let index_start = episode.IndexNumber.unwrap() as i32;
+                    let index_end = if let Some(end) = episode.IndexNumberEnd {
+                      end as i32
+                    } else {
+                      index_start
+                    };
+                    let item_name_full = match episode.IndexNumberEnd {
+                      Some(indexend) => {
+                        format!(
+                          "S{:02}E{:02}-{:02}",
+                          episode.ParentIndexNumber.unwrap_or(0),
+                          episode.IndexNumber.unwrap_or(0),
+                          indexend
+                        )
+                      },
+                      None => {
+                        format!(
+                          "S{:02}E{:02}",
+                          episode.ParentIndexNumber.unwrap_or(0),
+                          episode.IndexNumber.unwrap_or(0)
+                        )
+                      },
+                    };
+                    let item_name_end = match episode.IndexNumberEnd {
+                      Some(indexend) => {
+                        format!(
+                          "S{:02}E{:02}",
+                          episode.ParentIndexNumber.unwrap_or(0),
+                          indexend
+                        )
+                      },
+                      None => {
+                        format!(
+                          "S{:02}E{:02}",
+                          episode.ParentIndexNumber.unwrap_or(0),
+                          episode.IndexNumber.unwrap_or(0)
+                        )
+                      },
+                    };
+                    let item_name_start = format!(
+                      "S{:02}E{:02}",
+                      episode.ParentIndexNumber.unwrap_or(0),
+                      episode.IndexNumber.unwrap_or(0)
+                    );
+
+                    if itemlist.len() - 1 == i {
+                      if current_start == -1 {
+                        desc.push_str(&format!("{}", item_name_full));
+                      } else {
+                        desc.push_str(&format!("-{}", item_name_end));
+                      }
+                    } else if i == 0 || current_start == -1 {
+                      if itemlist[i + 1].IndexNumber.unwrap() as i32 != index_end + 1 {
+                        desc.push_str(&format!("{}, ", item_name_full));
+                        current_start = -1;
+                        continue;
+                      } else {
+                        desc.push_str(&item_name_start);
+                      }
+                    } else if itemlist[i + 1].IndexNumber.unwrap() as i32 != index_end + 1 {
+                      desc.push_str(&format!("-{}, ", item_name_end));
+                      current_start = -1;
+                      continue;
+                    }
+                    current_start = index_start;
+                  }
+
+                  let image = format!(
+                    "{}/Items/{}/Images/Primary?Quality=100",
+                    server.domain,
+                    item.clone().SeasonId.unwrap_or(item.clone().Id)
+                  );
+
+                  let time = (total_runtime as f64) / 10000000.0;
+                  let formatted_runtime: String = if time > 60.0 {
+                    if (time / 60.0) > 60.0 {
+                      format!(
+                        "{:02}:{:02}:{:02}",
+                        ((time / 60.0) / 60.0).trunc(),
+                        ((((time / 60.0) / 60.0) - ((time / 60.0) / 60.).trunc()) * 60.0).trunc(),
+                        (((time / 60.0) - (time / 60.0).trunc()) * 60.0).trunc()
+                      )
+                    } else {
+                      format!(
+                        "00:{:02}:{:02}",
+                        (time / 60.0).trunc(),
+                        (((time / 60.0) - (time / 60.0).trunc()) * 60.0).trunc()
+                      )
+                    }
                   } else {
-                    "?".to_string()
+                    format!("00:00:{time:02}")
                   };
 
                   let mut fields = Vec::new();
                   fields.push((
                     ":star: — Rating".to_string(),
-                    if x.CommunityRating.is_some() {
-                      x.CommunityRating.unwrap().to_string()
-                    } else {
-                      "?".to_string()
-                    },
+                    format!("{:.2}", ratings.iter().sum::<f64>() / ratings.len() as f64),
                     true,
                   ));
                   fields.push((
                     ":film_frames: — Runtime".to_string(),
-                    runtime.to_string(),
+                    formatted_runtime.to_string(),
                     true,
                   ));
                   fields.push((
                     ":frame_photo: — Resolution".to_string(),
-                    resolution.to_string(),
+                    v_resolutions.join(", "),
                     true,
                   ));
                   fields.push((
                     ":loud_sound: — Languages".to_string(),
-                    a_languages.to_string(),
+                    // 205 is the exact max amount of langs to show (they should all be 3 chars long)
+                    a_languages
+                      .iter()
+                      .take(205)
+                      .map(|s| s.as_str())
+                      .collect::<Vec<&str>>()
+                      .join(", "),
                     false,
                   ));
 
                   if !s_languages.is_empty() {
                     fields.push((
                       ":notepad_spiral: — Languages".to_string(),
-                      s_languages.to_string(),
+                      s_languages
+                        .iter()
+                        .take(205)
+                        .map(|s| s.as_str())
+                        .collect::<Vec<&str>>()
+                        .join(", "),
                       false,
                     ));
                   }
@@ -427,7 +953,12 @@ impl EventHandler for Handler {
                     .send_message(
                       &ctx,
                       CreateMessage::new()
-                        .add_embed(CreateEmbed::new().title(name).image(image))
+                        .add_embed(
+                          CreateEmbed::new()
+                            .title(item.to_string())
+                            .description(desc)
+                            .image(image),
+                        )
                         .add_embed(embed),
                     )
                     .await;
@@ -435,262 +966,26 @@ impl EventHandler for Handler {
                   if let Err(why) = res {
                     eprintln!("Error sending message: {why:?}");
                   } else {
-                    let database = sqlx::sqlite::SqlitePoolOptions::new()
-                      .max_connections(5)
-                      .connect_with(
-                        sqlx::sqlite::SqliteConnectOptions::new()
-                          .filename("jellycord.sqlite")
-                          .create_if_missing(true),
-                      )
-                      .await
-                      .expect("Couldn't connect to database");
-                    sqlx::query(
-                      format!(
-                        "INSERT INTO LIBRARY ({:?}) VALUES (\"{}\")",
-                        &server.user_id, &x.Id
-                      )
-                      .as_str(),
-                    )
-                    .execute(&database)
-                    .await
-                    .expect("insert error");
-                  }
-                } else if x.Type == Type::Season || x.Type == Type::Series {
-                  let seasons = if x.Type == Type::Series {
-                    let mut temp = vec![];
-                    for season in pre_season_items.clone() {
-                      if season.SeriesId.clone().unwrap() == x.Id {
-                        temp.push(season);
-                      }
-                    }
-                    temp
-                  } else {
-                    vec![x.clone()]
-                  };
-
-                  let mut runtimes: Vec<u64> = vec![];
-                  let mut ratings: Vec<f64> = vec![];
-                  let mut resolutions: Vec<String> = vec![];
-                  let mut a_languages: Vec<String> = vec![];
-                  let mut s_languages: Vec<String> = vec![];
-                  for season in seasons {
-                    for episode in pre_episode_items.clone() {
-                      if episode.SeasonId.unwrap() == season.Id {
-                        if let Some(runtime) = episode.RunTimeTicks {
-                          runtimes.push(runtime);
-                        }
-                        if let Some(rating) = episode.CommunityRating {
-                          if rating != 0.0 {
-                            ratings.push(rating);
-                          }
-                        }
-                        if let Some(mediastreams) = episode.MediaStreams {
-                          let mut height = String::new();
-                          let mut scan_type: char = 'p';
-                          for x in mediastreams {
-                            if x.Type == "Video" {
-                              height = x.Height.unwrap().to_string();
-                              if x.IsInterlaced {
-                                scan_type = 'i';
-                              }
-                            } else if x.Type == "Audio" {
-                              let lang = x.Language.unwrap_or("?".to_string());
-                              if !a_languages.contains(&lang) {
-                                a_languages.push(lang);
-                              }
-                            } else if x.Type == "Subtitle" {
-                              let lang = x.Language.unwrap_or("?".to_string());
-                              if !s_languages.contains(&lang) {
-                                s_languages.push(lang);
-                              }
-                            }
-                          }
-                          if height.is_empty() {
-                            height = "?".to_string()
-                          }
-                          height.push(scan_type);
-                          if !resolutions.contains(&height) {
-                            resolutions.push(height);
-                          }
-                        }
-                      }
-                    }
-                  }
-                  let image = format!(
-                    "{}/Items/{}/Images/Primary?api_key={}&Quality=100",
-                    server.domain,
-                    x.clone().SeasonId.unwrap_or(x.clone().Id),
-                    server.token
-                  );
-                  let name = x.to_string();
-
-                  let avg_rating = if !ratings.is_empty() {
-                    let mut total = 0.0;
-                    for x in ratings.clone() {
-                      total += x;
-                    }
-                    format!("{:.2}", total / ratings.len() as f64)
-                  } else {
-                    String::from("?")
-                  };
-
-                  let total_runtime = if !runtimes.is_empty() {
-                    let mut total = 0;
-                    for x in runtimes {
-                      total += x;
-                    }
-                    let time = (total as f64) / 10000000.0;
-                    let runtime: String = if time > 60.0 {
-                      if (time / 60.0) > 60.0 {
-                        format!(
-                          "{:02}:{:02}:{:02}",
-                          ((time / 60.0) / 60.0).trunc(),
-                          ((((time / 60.0) / 60.0) - ((time / 60.0) / 60.).trunc()) * 60.0).trunc(),
-                          (((time / 60.0) - (time / 60.0).trunc()) * 60.0).trunc()
+                    for x in itemlist {
+                      let database = sqlx::sqlite::SqlitePoolOptions::new()
+                        .max_connections(5)
+                        .connect_with(
+                          sqlx::sqlite::SqliteConnectOptions::new()
+                            .filename("jellycord.sqlite")
+                            .create_if_missing(true),
                         )
-                      } else {
+                        .await
+                        .expect("Couldn't connect to database");
+                      sqlx::query(
                         format!(
-                          "00:{:02}:{:02}",
-                          (time / 60.0).trunc(),
-                          (((time / 60.0) - (time / 60.0).trunc()) * 60.0).trunc()
+                          "INSERT INTO LIBRARY ({:?}) VALUES (\"{}\")",
+                          &server.user_id, &x.Id
                         )
-                      }
-                    } else {
-                      format!("00:00:{time:02}")
-                    };
-                    runtime
-                  } else {
-                    String::from("?")
-                  };
-
-                  let resolution_list = if !resolutions.is_empty() {
-                    let mut temp = String::new();
-                    for (index, x) in resolutions.iter().enumerate() {
-                      if index > 50 {
-                        break;
-                      }
-                      temp.push_str(&(x.to_owned() + ", "));
-                    }
-                    temp.strip_suffix(", ").unwrap().to_string()
-                  } else {
-                    String::from("?")
-                  };
-
-                  let a_languages_list = if !a_languages.is_empty() {
-                    let mut temp = String::new();
-                    for (index, x) in a_languages.iter().enumerate() {
-                      if index > 50 {
-                        break;
-                      }
-                      temp.push_str(&(x.to_owned() + ", "));
-                    }
-                    temp.strip_suffix(", ").unwrap().to_string()
-                  } else {
-                    String::from("?")
-                  };
-
-                  let s_languages_list = if !s_languages.is_empty() {
-                    let mut temp = String::new();
-                    for (index, x) in s_languages.iter().enumerate() {
-                      if index > 50 {
-                        break;
-                      }
-                      temp.push_str(&(x.to_owned() + ", "));
-                    }
-                    temp.strip_suffix(", ").unwrap().to_string()
-                  } else {
-                    String::from("?")
-                  };
-
-                  let mut fields = vec![
-                    (":star: — Rating".to_string(), avg_rating, true),
-                    (":film_frames: — Runtime".to_string(), total_runtime, true),
-                    (
-                      ":frame_photo: — Resolution".to_string(),
-                      resolution_list,
-                      true,
-                    ),
-                    (
-                      ":loud_sound: — Languages".to_string(),
-                      a_languages_list,
-                      false,
-                    ),
-                  ];
-
-                  if !s_languages_list.is_empty() {
-                    fields.push((
-                      ":notepad_spiral: — Languages".to_string(),
-                      s_languages_list,
-                      false,
-                    ));
-                  }
-
-                  let mut embed = CreateEmbed::default();
-                  for (name, value, inline) in &fields {
-                    embed = embed.field(name.clone(), value.clone(), *inline);
-                  }
-
-                  let res = ChannelId::new(server.channel_id as u64)
-                    .send_message(
-                      &ctx,
-                      CreateMessage::new()
-                        .add_embed(CreateEmbed::new().title(name).image(image))
-                        .add_embed(embed),
-                    )
-                    .await;
-
-                  if let Err(why) = res {
-                    eprintln!("Error sending message: {why:?}");
-                  } else {
-                    let database = sqlx::sqlite::SqlitePoolOptions::new()
-                      .max_connections(5)
-                      .connect_with(
-                        sqlx::sqlite::SqliteConnectOptions::new()
-                          .filename("jellycord.sqlite")
-                          .create_if_missing(true),
+                        .as_str(),
                       )
+                      .execute(&database)
                       .await
-                      .expect("Couldn't connect to database");
-                    sqlx::query(
-                      format!(
-                        "INSERT INTO LIBRARY ({:?}) VALUES (\"{}\")",
-                        &server.user_id, &x.Id
-                      )
-                      .as_str(),
-                    )
-                    .execute(&database)
-                    .await
-                    .expect("insert error");
-                    if x.Type == Type::Series {
-                      for item in raw_new_items.clone() {
-                        if item.SeriesId == Some(x.Id.clone()) {
-                          sqlx::query(
-                            format!(
-                              "INSERT INTO LIBRARY ({:?}) VALUES (\"{}\")",
-                              &server.user_id, &item.Id
-                            )
-                            .as_str(),
-                          )
-                          .execute(&database)
-                          .await
-                          .expect("insert error");
-                        }
-                      }
-                    } else if x.Type == Type::Season {
-                      for item in raw_new_items.clone() {
-                        if item.SeasonId == Some(x.Id.clone()) {
-                          sqlx::query(
-                            format!(
-                              "INSERT INTO LIBRARY ({:?}) VALUES (\"{}\")",
-                              &server.user_id, &item.Id
-                            )
-                            .as_str(),
-                          )
-                          .execute(&database)
-                          .await
-                          .expect("insert error");
-                        }
-                      }
+                      .expect("insert error");
                     }
                   }
                 }

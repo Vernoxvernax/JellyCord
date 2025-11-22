@@ -1,6 +1,5 @@
 #![allow(non_snake_case)]
 use config::{Config, File};
-use regex::Regex;
 use serde_derive::{Deserialize, Serialize};
 use serenity::all::{
   ActivityData, CreateEmbed, CreateInteractionResponse, CreateInteractionResponseMessage,
@@ -18,7 +17,10 @@ use std::time::Duration;
 
 mod commands;
 mod database;
-use database::*;
+mod jellyfin;
+use database::{get_front_database, get_library_by_user};
+
+use crate::jellyfin::{Item, LibraryTools, MediaResponse, Runtime, Type, get_episodes_info};
 
 #[derive(Deserialize)]
 struct ConfigFile {
@@ -38,143 +40,6 @@ pub struct Instance {
 struct UserList {
   Name: String,
   Id: String,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
-struct MediaResponse {
-  Items: Vec<Item>,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
-enum Type {
-  Movie,
-  Series,
-  Season,
-  Episode,
-  Special,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
-struct Item {
-  Name: String,
-  Id: String,
-  IndexNumber: Option<u32>,
-  ParentIndexNumber: Option<u32>,
-  IndexNumberEnd: Option<u32>,
-  Type: Type,
-  SeriesName: Option<String>,
-  SeriesId: Option<String>,
-  SeasonName: Option<String>,
-  SeasonId: Option<String>,
-  MediaStreams: Option<Vec<MediaStream>>,
-  CommunityRating: Option<f64>,
-  RunTimeTicks: Option<u64>,
-  PremiereDate: Option<String>,
-  pub ProductionYear: Option<u32>,
-  Status: Option<String>,
-  EndDate: Option<String>,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
-struct MediaStream {
-  Type: String,
-  Language: Option<String>,
-  Height: Option<u32>,
-  IsInterlaced: bool,
-}
-
-trait LibraryTools {
-  fn contains(&self, s: String) -> bool;
-}
-
-impl LibraryTools for Vec<Vec<Item>> {
-  fn contains(&self, s: String) -> bool {
-    for itemlist in self.iter() {
-      for item in itemlist {
-        if item.Id == s.clone() {
-          return true;
-        }
-      }
-    }
-    false
-  }
-}
-
-impl ToString for Type {
-  fn to_string(&self) -> String {
-    match self {
-      Self::Movie => String::from("Movie"),
-      Self::Episode => String::from("Episode"),
-      Self::Season => String::from("Season"),
-      Self::Series => String::from("Series"),
-      Self::Special => String::from("Special"),
-    }
-  }
-}
-
-impl ToString for Item {
-  fn to_string(&self) -> String {
-    let time = if let (Some(start), Some(end)) = (self.PremiereDate.clone(), self.EndDate.clone()) {
-      if start[0..4] == end[0..4] {
-        format!("({})", &start[0..4])
-      } else {
-        format!("({}-{})", &start[0..4], &end[0..4])
-      }
-    } else if self.Status == Some(String::from("Continuing")) {
-      format!(
-        "({}-)",
-        &self.PremiereDate.clone().unwrap_or(String::from("????"))[0..4]
-      )
-    } else if let Some(premiere_date) = &self.PremiereDate {
-      format!("({})", &premiere_date[0..4])
-    } else if let Some(production_year) = &self.ProductionYear {
-      format!("({})", production_year)
-    } else {
-      "(???)".to_string()
-    };
-    let mut name: String;
-    match self.Type {
-      Type::Season | Type::Episode => name = self.SeriesName.clone().unwrap_or(String::from("???")),
-      _ => name = self.Name.clone(),
-    }
-    if name.contains('(') {
-      let re = Regex::new(r" \(\d{4}\)").unwrap();
-      name = re.replace_all(&name, "").to_string();
-    }
-
-    match self.Type {
-      Type::Movie | Type::Series => {
-        format!("{} {}", name, time)
-      },
-      Type::Season => {
-        format!("{} {} - {}", name, time, self.Name.clone())
-      },
-      Type::Episode => match self.IndexNumberEnd {
-        Some(indexend) => {
-          format!(
-            "{} {} - S{:02}E{:02}-{:02} - {}",
-            name,
-            time,
-            self.ParentIndexNumber.unwrap_or(0),
-            self.IndexNumber.unwrap_or(0),
-            indexend,
-            self.Name
-          )
-        },
-        None => {
-          format!(
-            "{} {} - S{:02}E{:02} - {}",
-            name,
-            time,
-            self.ParentIndexNumber.unwrap_or(0),
-            self.IndexNumber.unwrap_or(0),
-            self.Name
-          )
-        },
-      },
-      _ => format!("{} {} (unknown media type)", self.Name, time),
-    }
-  }
 }
 
 struct Handler {
@@ -334,10 +199,10 @@ impl EventHandler for Handler {
               for itemlist in new_items.iter_mut() {
                 if itemlist.len() == 1 {
                   let item = itemlist[0].clone();
-                  if let Some(streams) = item.MediaStreams.clone() {
-                    if streams.is_empty() {
-                      continue;
-                    }
+                  if let Some(streams) = item.MediaStreams.clone()
+                    && streams.is_empty()
+                  {
+                    continue;
                   }
 
                   if item.Type == Type::Episode
@@ -385,28 +250,9 @@ impl EventHandler for Handler {
                     } else {
                       ("?".to_string(), "?".to_string(), String::new())
                     };
-                    let runtime: String = if item.RunTimeTicks.is_some() {
-                      let time = (item.RunTimeTicks.unwrap() as f64) / 10000000.0;
-                      let formated: String = if time > 60.0 {
-                        if (time / 60.0) > 60.0 {
-                          format!(
-                            "{:02}:{:02}:{:02}",
-                            ((time / 60.0) / 60.0).trunc(),
-                            ((((time / 60.0) / 60.0) - ((time / 60.0) / 60.).trunc()) * 60.0)
-                              .trunc(),
-                            (((time / 60.0) - (time / 60.0).trunc()) * 60.0).trunc()
-                          )
-                        } else {
-                          format!(
-                            "00:{:02}:{:02}",
-                            (time / 60.0).trunc(),
-                            (((time / 60.0) - (time / 60.0).trunc()) * 60.0).trunc()
-                          )
-                        }
-                      } else {
-                        format!("00:00:{time:02}")
-                      };
-                      formated
+
+                    let runtime: String = if let Some(ticks) = item.RunTimeTicks {
+                      Runtime(ticks).fmt()
                     } else {
                       "?".to_string()
                     };
@@ -484,147 +330,31 @@ impl EventHandler for Handler {
                     }
                   } else if item.Type == Type::Season || item.Type == Type::Series {
                     let mut ids: Vec<String> = vec![item.Id.clone()];
-                    let seasons = if item.Type == Type::Series {
-                      let mut temp = vec![];
+                    let mut episodes: Vec<Item> = vec![];
+
+                    if item.Type == Type::Series {
                       for season in pre_season_items.clone() {
                         if season.SeriesId.clone().unwrap() == item.Id {
                           ids.push(season.Id.clone());
-                          temp.push(season);
-                        }
-                      }
-                      temp
-                    } else {
-                      vec![item.clone()]
-                    };
-
-                    let mut desc = String::new();
-                    let mut a_languages: Vec<String> = vec![];
-                    let mut s_languages: Vec<String> = vec![];
-                    let mut v_resolutions: Vec<String> = vec![];
-                    let mut ratings: Vec<f64> = vec![];
-                    let mut total_runtime: u64 = 0;
-
-                    let mut current_start = -1;
-                    for season in seasons {
-                      for (i, episode) in pre_episode_items.clone().iter().enumerate() {
-                        if episode.SeasonId.clone().unwrap() != season.Id {
-                          continue;
-                        }
-
-                        ids.push(episode.Id.clone());
-
-                        if let Some(mediastreams) = &episode.MediaStreams {
-                          for x in mediastreams {
-                            if x.Type == "Video" {
-                              let resolution: String;
-                              let scan_type: char;
-
-                              if x.IsInterlaced {
-                                scan_type = 'i';
-                              } else {
-                                scan_type = 'p';
-                              }
-
-                              if let Some(height) = x.Height {
-                                resolution = height.to_string() + &scan_type.to_string();
-                              } else {
-                                resolution = String::from("?") + &scan_type.to_string();
-                              }
-
-                              if !v_resolutions.contains(&resolution) {
-                                v_resolutions.push(resolution);
-                              }
-                            } else if x.Type == "Audio" {
-                              let lang = x.Language.clone().unwrap_or("?".to_string());
-                              if !a_languages.contains(&lang) {
-                                a_languages.push(lang);
-                              }
-                            } else if x.Type == "Subtitle" {
-                              let lang = x.Language.clone().unwrap_or("?".to_string());
-                              if !s_languages.contains(&lang) {
-                                s_languages.push(lang);
-                              }
+                          for episode in &pre_episode_items {
+                            if episode.SeasonId.clone().unwrap() == season.Id {
+                              ids.push(episode.Id.clone());
+                              episodes.push(episode.clone());
                             }
                           }
                         }
-
-                        if let Some(runtime) = episode.RunTimeTicks {
-                          total_runtime += runtime;
-                        }
-
-                        if let Some(rating) = episode.CommunityRating {
-                          ratings.push(rating);
-                        }
-
-                        let index_start = episode.IndexNumber.unwrap() as i32;
-                        let index_end = if let Some(end) = episode.IndexNumberEnd {
-                          end as i32
-                        } else {
-                          index_start
-                        };
-                        let item_name_full = match episode.IndexNumberEnd {
-                          Some(indexend) => {
-                            format!(
-                              "S{:02}E{:02}-{:02}",
-                              episode.ParentIndexNumber.unwrap_or(0),
-                              episode.IndexNumber.unwrap_or(0),
-                              indexend
-                            )
-                          },
-                          None => {
-                            format!(
-                              "S{:02}E{:02}",
-                              episode.ParentIndexNumber.unwrap_or(0),
-                              episode.IndexNumber.unwrap_or(0)
-                            )
-                          },
-                        };
-                        let item_name_end = match episode.IndexNumberEnd {
-                          Some(indexend) => {
-                            format!(
-                              "S{:02}E{:02}",
-                              episode.ParentIndexNumber.unwrap_or(0),
-                              indexend
-                            )
-                          },
-                          None => {
-                            format!(
-                              "S{:02}E{:02}",
-                              episode.ParentIndexNumber.unwrap_or(0),
-                              episode.IndexNumber.unwrap_or(0)
-                            )
-                          },
-                        };
-                        let item_name_start = format!(
-                          "S{:02}E{:02}",
-                          episode.ParentIndexNumber.unwrap_or(0),
-                          episode.IndexNumber.unwrap_or(0)
-                        );
-
-                        if pre_episode_items.len() - 1 == i {
-                          if current_start == -1 {
-                            desc.push_str(&format!("{}", item_name_full));
-                          } else {
-                            desc.push_str(&format!("-{}", item_name_end));
-                          }
-                        } else if i == 0 || current_start == -1 {
-                          if pre_episode_items[i + 1].IndexNumber.unwrap() as i32 != index_end + 1 {
-                            desc.push_str(&format!("{}, ", item_name_full));
-                            current_start = -1;
-                            continue;
-                          } else {
-                            desc.push_str(&item_name_start);
-                          }
-                        } else if pre_episode_items[i + 1].IndexNumber.unwrap() as i32
-                          != index_end + 1
-                        {
-                          desc.push_str(&format!("-{}, ", item_name_end));
-                          current_start = -1;
-                          continue;
-                        }
-                        current_start = index_start;
                       }
-                    }
+                    } else {
+                      ids.push(item.Id.clone());
+                      for episode in &pre_episode_items {
+                        if episode.SeasonId.clone().unwrap() == item.Id {
+                          ids.push(episode.Id.clone());
+                          episodes.push(episode.clone());
+                        }
+                      }
+                    };
+
+                    let info = get_episodes_info(&mut episodes);
 
                     let image = format!(
                       "{}/Items/{}/Images/Primary?api_key={}&Quality=100",
@@ -634,46 +364,27 @@ impl EventHandler for Handler {
                     );
                     let name = item.to_string();
 
-                    let time = (total_runtime as f64) / 10000000.0;
-                    let formatted_runtime: String = if time > 60.0 {
-                      if (time / 60.0) > 60.0 {
-                        format!(
-                          "{:02}:{:02}:{:02}",
-                          ((time / 60.0) / 60.0).trunc(),
-                          ((((time / 60.0) / 60.0) - ((time / 60.0) / 60.).trunc()) * 60.0).trunc(),
-                          (((time / 60.0) - (time / 60.0).trunc()) * 60.0).trunc()
-                        )
-                      } else {
-                        format!(
-                          "00:{:02}:{:02}",
-                          (time / 60.0).trunc(),
-                          (((time / 60.0) - (time / 60.0).trunc()) * 60.0).trunc()
-                        )
-                      }
-                    } else {
-                      format!("00:00:{time:02}")
-                    };
-
                     let mut fields = Vec::new();
                     fields.push((
                       ":star: — Rating".to_string(),
-                      format!("{:.2}", ratings.iter().sum::<f64>() / ratings.len() as f64),
+                      format!("{:.2}", info.Ratings),
                       true,
                     ));
                     fields.push((
                       ":film_frames: — Runtime".to_string(),
-                      formatted_runtime.to_string(),
+                      info.TotalRuntime.fmt(),
                       true,
                     ));
                     fields.push((
                       ":frame_photo: — Resolution".to_string(),
-                      v_resolutions.join(", "),
+                      info.VideoResolutions.join(", "),
                       true,
                     ));
                     fields.push((
                       ":loud_sound: — Languages".to_string(),
                       // 205 is the exact max amount of langs to show (they should all be 3 chars long)
-                      a_languages
+                      info
+                        .AudioLanguages
                         .iter()
                         .take(205)
                         .map(|s| s.as_str())
@@ -682,10 +393,11 @@ impl EventHandler for Handler {
                       false,
                     ));
 
-                    if !s_languages.is_empty() {
+                    if !info.SubtitleLanguages.is_empty() {
                       fields.push((
                         ":notepad_spiral: — Languages".to_string(),
-                        s_languages
+                        info
+                          .SubtitleLanguages
                           .iter()
                           .take(205)
                           .map(|s| s.as_str())
@@ -708,7 +420,7 @@ impl EventHandler for Handler {
                             CreateEmbed::new()
                               .title(name)
                               .image(image)
-                              .description(desc),
+                              .description(info.Indexes),
                           )
                           .add_embed(embed),
                       )
@@ -758,124 +470,8 @@ impl EventHandler for Handler {
                   }
 
                   itemlist.sort_by_key(|i| i.IndexNumber.unwrap());
-                  let mut desc = String::new();
-                  let mut a_languages: Vec<String> = vec![];
-                  let mut s_languages: Vec<String> = vec![];
-                  let mut v_resolutions: Vec<String> = vec![];
-                  let mut ratings: Vec<f64> = vec![];
-                  let mut total_runtime: u64 = 0;
 
-                  let mut current_start: i32 = -1;
-                  for (i, episode) in itemlist.iter().enumerate() {
-                    if episode.MediaStreams.is_some() {
-                      for x in episode.MediaStreams.clone().unwrap() {
-                        if x.Type == "Video" {
-                          let resolution: String;
-                          let scan_type: char;
-
-                          if x.IsInterlaced {
-                            scan_type = 'i';
-                          } else {
-                            scan_type = 'p';
-                          }
-
-                          if let Some(height) = x.Height {
-                            resolution = height.to_string() + &scan_type.to_string();
-                          } else {
-                            resolution = String::from("?") + &scan_type.to_string();
-                          }
-
-                          if !v_resolutions.contains(&resolution) {
-                            v_resolutions.push(resolution);
-                          }
-                        } else if x.Type == "Audio" {
-                          let lang = x.Language.unwrap_or("?".to_string());
-                          if !a_languages.contains(&lang) {
-                            a_languages.push(lang);
-                          }
-                        } else if x.Type == "Subtitle" {
-                          let lang = x.Language.unwrap_or("?".to_string());
-                          if !s_languages.contains(&lang) {
-                            s_languages.push(lang);
-                          }
-                        }
-                      }
-                    }
-
-                    if let Some(rating) = episode.CommunityRating {
-                      ratings.push(rating);
-                    }
-
-                    if let Some(runtime) = episode.RunTimeTicks {
-                      total_runtime += runtime;
-                    }
-
-                    let index_start = episode.IndexNumber.unwrap() as i32;
-                    let index_end = if let Some(end) = episode.IndexNumberEnd {
-                      end as i32
-                    } else {
-                      index_start
-                    };
-                    let item_name_full = match episode.IndexNumberEnd {
-                      Some(indexend) => {
-                        format!(
-                          "S{:02}E{:02}-{:02}",
-                          episode.ParentIndexNumber.unwrap_or(0),
-                          episode.IndexNumber.unwrap_or(0),
-                          indexend
-                        )
-                      },
-                      None => {
-                        format!(
-                          "S{:02}E{:02}",
-                          episode.ParentIndexNumber.unwrap_or(0),
-                          episode.IndexNumber.unwrap_or(0)
-                        )
-                      },
-                    };
-                    let item_name_end = match episode.IndexNumberEnd {
-                      Some(indexend) => {
-                        format!(
-                          "S{:02}E{:02}",
-                          episode.ParentIndexNumber.unwrap_or(0),
-                          indexend
-                        )
-                      },
-                      None => {
-                        format!(
-                          "S{:02}E{:02}",
-                          episode.ParentIndexNumber.unwrap_or(0),
-                          episode.IndexNumber.unwrap_or(0)
-                        )
-                      },
-                    };
-                    let item_name_start = format!(
-                      "S{:02}E{:02}",
-                      episode.ParentIndexNumber.unwrap_or(0),
-                      episode.IndexNumber.unwrap_or(0)
-                    );
-
-                    if itemlist.len() - 1 == i {
-                      if current_start == -1 {
-                        desc.push_str(&format!("{}", item_name_full));
-                      } else {
-                        desc.push_str(&format!("-{}", item_name_end));
-                      }
-                    } else if i == 0 || current_start == -1 {
-                      if itemlist[i + 1].IndexNumber.unwrap() as i32 != index_end + 1 {
-                        desc.push_str(&format!("{}, ", item_name_full));
-                        current_start = -1;
-                        continue;
-                      } else {
-                        desc.push_str(&item_name_start);
-                      }
-                    } else if itemlist[i + 1].IndexNumber.unwrap() as i32 != index_end + 1 {
-                      desc.push_str(&format!("-{}, ", item_name_end));
-                      current_start = -1;
-                      continue;
-                    }
-                    current_start = index_start;
-                  }
+                  let info = get_episodes_info(itemlist);
 
                   let image = format!(
                     "{}/Items/{}/Images/Primary?Quality=100",
@@ -883,46 +479,27 @@ impl EventHandler for Handler {
                     item.clone().SeasonId.unwrap_or(item.clone().Id)
                   );
 
-                  let time = (total_runtime as f64) / 10000000.0;
-                  let formatted_runtime: String = if time > 60.0 {
-                    if (time / 60.0) > 60.0 {
-                      format!(
-                        "{:02}:{:02}:{:02}",
-                        ((time / 60.0) / 60.0).trunc(),
-                        ((((time / 60.0) / 60.0) - ((time / 60.0) / 60.).trunc()) * 60.0).trunc(),
-                        (((time / 60.0) - (time / 60.0).trunc()) * 60.0).trunc()
-                      )
-                    } else {
-                      format!(
-                        "00:{:02}:{:02}",
-                        (time / 60.0).trunc(),
-                        (((time / 60.0) - (time / 60.0).trunc()) * 60.0).trunc()
-                      )
-                    }
-                  } else {
-                    format!("00:00:{time:02}")
-                  };
-
                   let mut fields = Vec::new();
                   fields.push((
                     ":star: — Rating".to_string(),
-                    format!("{:.2}", ratings.iter().sum::<f64>() / ratings.len() as f64),
+                    format!("{:.2}", info.Ratings),
                     true,
                   ));
                   fields.push((
                     ":film_frames: — Runtime".to_string(),
-                    formatted_runtime.to_string(),
+                    info.TotalRuntime.fmt(),
                     true,
                   ));
                   fields.push((
                     ":frame_photo: — Resolution".to_string(),
-                    v_resolutions.join(", "),
+                    info.VideoResolutions.join(", "),
                     true,
                   ));
                   fields.push((
                     ":loud_sound: — Languages".to_string(),
                     // 205 is the exact max amount of langs to show (they should all be 3 chars long)
-                    a_languages
+                    info
+                      .AudioLanguages
                       .iter()
                       .take(205)
                       .map(|s| s.as_str())
@@ -931,10 +508,11 @@ impl EventHandler for Handler {
                     false,
                   ));
 
-                  if !s_languages.is_empty() {
+                  if !info.SubtitleLanguages.is_empty() {
                     fields.push((
                       ":notepad_spiral: — Languages".to_string(),
-                      s_languages
+                      info
+                        .SubtitleLanguages
                         .iter()
                         .take(205)
                         .map(|s| s.as_str())
@@ -956,7 +534,7 @@ impl EventHandler for Handler {
                         .add_embed(
                           CreateEmbed::new()
                             .title(item.to_string())
-                            .description(desc)
+                            .description(info.Indexes)
                             .image(image),
                         )
                         .add_embed(embed),

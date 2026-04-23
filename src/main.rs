@@ -204,17 +204,17 @@ impl EventHandler for Handler {
                   {
                     continue;
                   }
+                  let name = item.to_string();
+                  let image = format!(
+                    "{}/Items/{}/Images/Primary?Quality=100",
+                    server.domain,
+                    item.clone().SeasonId.unwrap_or(item.clone().Id)
+                  );
 
                   if item.Type == Type::Episode
                     || item.Type == Type::Special
                     || item.Type == Type::Movie
                   {
-                    let name = item.to_string();
-                    let image = format!(
-                      "{}/Items/{}/Images/Primary?Quality=100",
-                      server.domain,
-                      item.clone().SeasonId.unwrap_or(item.clone().Id)
-                    );
                     let (resolution, a_languages, s_languages) = if item.MediaStreams.is_some() {
                       let mut height: String = String::new();
                       let mut a_languages: String = String::new();
@@ -355,14 +355,6 @@ impl EventHandler for Handler {
                     };
 
                     let info = get_episodes_info(&mut episodes);
-
-                    let image = format!(
-                      "{}/Items/{}/Images/Primary?api_key={}&Quality=100",
-                      server.domain,
-                      item.clone().SeasonId.unwrap_or(item.clone().Id),
-                      server.token
-                    );
-                    let name = item.to_string();
 
                     let mut fields = Vec::new();
                     fields.push((

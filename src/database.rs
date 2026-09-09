@@ -1,4 +1,4 @@
-use sqlx::Row;
+use sqlx::{AssertSqlSafe, Row};
 
 use crate::Instance;
 
@@ -39,7 +39,7 @@ pub async fn get_library_by_user(user_id: String) -> Vec<String> {
     )
     .await
     .expect("Couldn't connect to database");
-  let db_fetch = sqlx::query(format!("SELECT {:?} FROM LIBRARY", &user_id).as_str())
+  let db_fetch = sqlx::query(AssertSqlSafe(format!("SELECT {:?} FROM LIBRARY", &user_id)))
     .fetch_all(&database)
     .await
     .unwrap();

@@ -9,6 +9,7 @@ use serenity::async_trait;
 use serenity::model::id::{ChannelId, GuildId};
 use serenity::model::prelude::*;
 use serenity::prelude::*;
+use sqlx::AssertSqlSafe;
 use std::env;
 use std::path::Path;
 use std::process::exit;
@@ -96,9 +97,9 @@ impl EventHandler for Handler {
           let front_db = get_front_database().await;
           for server in front_db {
             let timed_response_obj = get_serialized_page(format!(
-              "{}/Users/{}/Items?api_key={}&Recursive=true&IncludeItemTypes=Movie,Series,Episode,Season,Special&Fields=MediaStreams&collapseBoxSetItems=False",
-              server.domain, server.user_id, server.token
-            )).await;
+              "{}/Users/{}/Items?Recursive=true&IncludeItemTypes=Movie,Series,Episode,Season,Special&Fields=MediaStreams&collapseBoxSetItems=False",
+              server.domain, server.user_id
+            ), server.token.clone()).await;
             if let Ok(serialized_server) = timed_response_obj {
               let lib = get_library_by_user(server.clone().user_id).await;
 
@@ -122,13 +123,10 @@ impl EventHandler for Handler {
                 }
                 id_as_value.pop();
 
-                sqlx::query(
-                  format!(
-                    "INSERT INTO LIBRARY ({:?}) VALUES {}",
-                    &server.user_id, &id_as_value
-                  )
-                  .as_str(),
-                )
+                sqlx::query(AssertSqlSafe(format!(
+                  "INSERT INTO LIBRARY ({:?}) VALUES {}",
+                  &server.user_id, &id_as_value
+                )))
                 .execute(&database)
                 .await
                 .expect("insert error");
@@ -317,13 +315,10 @@ impl EventHandler for Handler {
                         )
                         .await
                         .expect("Couldn't connect to database");
-                      sqlx::query(
-                        format!(
-                          "INSERT INTO LIBRARY ({:?}) VALUES (\"{}\")",
-                          &server.user_id, &item.Id
-                        )
-                        .as_str(),
-                      )
+                      sqlx::query(AssertSqlSafe(format!(
+                        "INSERT INTO LIBRARY ({:?}) VALUES (\"{}\")",
+                        &server.user_id, &item.Id
+                      )))
                       .execute(&database)
                       .await
                       .expect("insert error");
@@ -431,13 +426,10 @@ impl EventHandler for Handler {
                           )
                           .await
                           .expect("Couldn't connect to database");
-                        sqlx::query(
-                          format!(
-                            "INSERT INTO LIBRARY ({:?}) VALUES (\"{}\")",
-                            &server.user_id, &x
-                          )
-                          .as_str(),
-                        )
+                        sqlx::query(AssertSqlSafe(format!(
+                          "INSERT INTO LIBRARY ({:?}) VALUES (\"{}\")",
+                          &server.user_id, &x
+                        )))
                         .execute(&database)
                         .await
                         .expect("insert error");
@@ -546,13 +538,10 @@ impl EventHandler for Handler {
                         )
                         .await
                         .expect("Couldn't connect to database");
-                      sqlx::query(
-                        format!(
-                          "INSERT INTO LIBRARY ({:?}) VALUES (\"{}\")",
-                          &server.user_id, &x.Id
-                        )
-                        .as_str(),
-                      )
+                      sqlx::query(AssertSqlSafe(format!(
+                        "INSERT INTO LIBRARY ({:?}) VALUES (\"{}\")",
+                        &server.user_id, &x.Id
+                      )))
                       .execute(&database)
                       .await
                       .expect("insert error");
@@ -619,12 +608,16 @@ async fn main() {
   }
 }
 
-async fn get_serialized_page(url: String) -> Result<MediaResponse, ()> {
+async fn get_serialized_page(url: String, api_key: String) -> Result<MediaResponse, ()> {
   let client = reqwest::Client::new();
   let web_request = client
     .get(url)
     .timeout(Duration::from_secs(120))
     .header("Content-Type", "application/json")
+    .header(
+      "Authorization",
+      format!("MediaBrowser Token=\"{}\"", api_key),
+    )
     .send()
     .await;
 

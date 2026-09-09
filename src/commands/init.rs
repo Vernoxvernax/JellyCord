@@ -1,8 +1,11 @@
+use std::time::Duration;
+
 use reqwest::Client;
 use serenity::all::{
   ChannelType, CommandDataOption, CommandDataOptionValue, CommandOptionType, CreateCommand,
   CreateCommandOption, Permissions,
 };
+use sqlx::AssertSqlSafe;
 
 use crate::{Instance, UserList};
 
@@ -43,11 +46,16 @@ pub async fn run(options: &[CommandDataOption]) -> String {
     .expect("Couldn't connect to database");
 
   let domain = url.trim_end_matches('/').to_string();
+
   let client = Client::new();
   let users_request = client
-    .get(format!("{}/Users?api_key={}", &domain, &token))
+    .get(format!("{}/Users", &domain))
+    .timeout(Duration::from_secs(120))
+    .header("Content-Type", "application/json")
+    .header("Authorization", format!("MediaBrowser Token=\"{}\"", token))
     .send()
     .await;
+
   if users_request.is_err() {
     database.close().await;
     return "The URL you've entered, seems to be of invalid format?\n- \"https://emby.yourdomain.com\"".to_string();
@@ -98,20 +106,17 @@ pub async fn run(options: &[CommandDataOption]) -> String {
     };
 
     // If the table already exists in the database then just rename it.
-    if sqlx::query(format!("SELECT {} FROM LIBRARY", &user_id).as_str())
-      .fetch_one(&database)
+    if sqlx::query(AssertSqlSafe(format!("SELECT {} FROM LIBRARY", user_id)))
+      .fetch_all(&database)
       .await
       .is_ok()
     {
-      sqlx::query(
-        format!(
-          "ALTER TABLE LIBRARY RENAME COLUMN {:?} TO \"{}_{}\"",
-          &user_id,
-          &user_id,
-          chrono::offset::Utc::now().timestamp()
-        )
-        .as_str(),
-      )
+      sqlx::query(AssertSqlSafe(format!(
+        "ALTER TABLE LIBRARY RENAME COLUMN {:?} TO \"{}_{}\"",
+        &user_id,
+        &user_id,
+        chrono::offset::Utc::now().timestamp()
+      )))
       .execute(&database)
       .await
       .expect("couldn't rename database");
@@ -123,10 +128,13 @@ pub async fn run(options: &[CommandDataOption]) -> String {
     // request alone greatly outlives the maximum timeout for discord's
     // command response, so we just leave it empty and fill it later
     // within the loop in `main.rs`.
-    sqlx::query(format!("ALTER TABLE LIBRARY ADD {:?} VARCHAR(30)", &user_id).as_str())
-      .execute(&database)
-      .await
-      .ok();
+    sqlx::query(AssertSqlSafe(format!(
+      "ALTER TABLE LIBRARY ADD {:?} VARCHAR(30)",
+      &user_id
+    )))
+    .execute(&database)
+    .await
+    .ok();
 
     let add = Instance {
       active_channel: 1,

@@ -1,9 +1,10 @@
 #!/bin/sh
+set -e
 
 if [ ! -f /data/jellycord.yaml ]; then
 	echo "discord_token: \"<>\"" > /data/jellycord.yaml
 	echo "Please enter the discord_token into the config file and restart the container."
-	cd /data && SETUP=1 /usr/local/cargo/bin/jellycord
+	cd /data && SETUP=1 /usr/local/bin/jellycord
 	chown -R $UID:$GID /data
 else
 	cd /data 
@@ -11,9 +12,9 @@ else
 	# this step is necessary so that the permissions for the db can be changed before running jellycord
 	if [ ! -f /data/jellycord.sqlite ]; then
 		echo "Creating database..."
-		SETUP=1 /usr/local/cargo/bin/jellycord
+		SETUP=1 /usr/local/bin/jellycord
 	fi
 
 	chown -R $UID:$GID /data
-	/usr/local/cargo/bin/jellycord
+	/usr/local/bin/jellycord
 fi

@@ -1,23 +1,38 @@
-FROM lukemathwalker/cargo-chef:latest-rust-alpine AS chef
+FROM rust:1-slim-trixie AS builder
 WORKDIR /build
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        libssl-dev \
+        pkg-config \
+    && rm -rf /var/lib/apt/lists/*
 
-FROM chef AS planner
 COPY Cargo.toml ./
 COPY src ./src
-RUN cargo chef prepare --recipe-path recipe.json
+COPY migrations ./migrations
+COPY .env ./
 
-FROM chef AS builder
-RUN apk add --no-cache libressl-dev
-COPY --from=planner /build/recipe.json recipe.json
-RUN cargo chef cook --release --recipe-path recipe.json
-COPY . .
 RUN cargo install sqlx-cli
-RUN sqlx database create && sqlx migrate run
-RUN cargo install --path /build/.
+RUN sqlx database create
+RUN sqlx migrate run
+RUN cargo install --path .
 
-FROM alpine:3.21.3 AS runtime
-COPY --from=builder /usr/local/cargo/bin/jellycord /usr/local/cargo/bin/jellycord
+
+FROM debian:trixie-slim AS runtime
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        libssl3 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /usr/local/cargo/bin/jellycord /usr/local/bin/jellycord
+COPY --from=builder /usr/local/cargo/bin/sqlx /usr/local/bin/sqlx
+COPY migrations /migrations
 COPY docker_build/entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh && mkdir /data
+
+RUN chmod +x /entrypoint.sh \
+    && mkdir /data
+
 VOLUME ["/data"]
+
 ENTRYPOINT ["/entrypoint.sh"]

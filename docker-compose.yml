@@ -1,4 +1,3 @@
-version: '3.7'
 services:
   jellycord:
     image: jellycord:0.1.6
@@ -9,3 +8,4 @@ services:
     environment:
       - UID=1000
       - GID=1000
+      - DATABASE_URL=sqlite:jellycord.sqlite

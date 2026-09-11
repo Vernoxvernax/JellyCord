@@ -9,7 +9,6 @@ use serenity::async_trait;
 use serenity::model::id::{ChannelId, GuildId};
 use serenity::model::prelude::*;
 use serenity::prelude::*;
-use sqlx::AssertSqlSafe;
 use std::env;
 use std::path::Path;
 use std::process::exit;
@@ -21,6 +20,7 @@ mod database;
 mod jellyfin;
 use database::{get_front_database, get_library_by_user};
 
+use crate::database::{get_new_items, mark_items_saved};
 use crate::jellyfin::{Item, LibraryTools, MediaResponse, Runtime, Type, get_episodes_info};
 
 #[derive(Deserialize)]
@@ -94,93 +94,77 @@ impl EventHandler for Handler {
     if !self.is_loop_running.load(Ordering::Relaxed) {
       tokio::spawn(async move {
         'main: loop {
-          let front_db = get_front_database().await;
+          let database = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(5)
+            .connect_with(
+              sqlx::sqlite::SqliteConnectOptions::new()
+                .filename("jellycord.sqlite")
+                .create_if_missing(true),
+            )
+            .await
+            .expect("Couldn't connect to database");
+          let front_db = get_front_database(&database).await;
           for server in front_db {
             let timed_response_obj = get_serialized_page(format!(
               "{}/Users/{}/Items?Recursive=true&IncludeItemTypes=Movie,Series,Episode,Season,Special&Fields=MediaStreams&collapseBoxSetItems=False",
               server.domain, server.user_id
             ), server.token.clone()).await;
             if let Ok(serialized_server) = timed_response_obj {
-              let lib = get_library_by_user(server.clone().user_id).await;
+              let lib = get_library_by_user(&database, server.clone().user_id).await;
 
-              // Fill the library if it's empty
-              // There is a problem with situations where the library is empty upon creating
-              // and then gets a new entry, but it's absolutely necessary. See `commands/init.rs`
+              // If the library was empty then don't announce anything.
+              // So if the library was empty and gets one new item, it will skip that first anounce, but thats the only way to make jellycord reliable.
+              // See `commands/init.rs`
               if lib.is_empty() {
-                let database = sqlx::sqlite::SqlitePoolOptions::new()
-                  .max_connections(5)
-                  .connect_with(
-                    sqlx::sqlite::SqliteConnectOptions::new()
-                      .filename("jellycord.sqlite")
-                      .create_if_missing(true),
-                  )
+                mark_items_saved(&database, &server.user_id, &serialized_server.Items)
                   .await
-                  .expect("Couldn't connect to database");
+                  .unwrap();
+              }
 
-                let mut id_as_value: String = String::new();
-                for item in serialized_server.clone().Items {
-                  id_as_value.push_str(format!("(\"{}\"),", item.Id).as_str());
-                }
-                id_as_value.pop();
-
-                sqlx::query(AssertSqlSafe(format!(
-                  "INSERT INTO LIBRARY ({:?}) VALUES {}",
-                  &server.user_id, &id_as_value
-                )))
-                .execute(&database)
+              let new_items = get_new_items(&database, &server.user_id, &serialized_server.Items)
                 .await
-                .expect("insert error");
-                database.close().await;
-                continue;
-              }
-
-              let mut library_stringed: Vec<String> = vec![];
-              for item in lib {
-                library_stringed.push(item);
-              }
+                .unwrap();
 
               let mut raw_new_items: Vec<Item> = vec![]; // contains all new items
               // new movies or series items; it will eventually get all new items from the for loops later
               // type is a nested list to group episodes of the same season together while keeping the order mostly the same
-              let mut new_items: Vec<Vec<Item>> = vec![];
+              let mut new_messages: Vec<Vec<Item>> = vec![];
               let mut pre_season_items: Vec<Item> = vec![]; // all new season items
               let mut pre_episode_items: Vec<Item> = vec![]; // all new episode items
-              for item in &serialized_server.Items {
-                if !library_stringed.contains(&item.Id) {
-                  raw_new_items.append(&mut vec![item.clone()]);
-                  if item.Type == Type::Movie || item.Type == Type::Series {
-                    new_items.push(vec![item.clone()]);
-                  } else if item.Type == Type::Season {
-                    pre_season_items.append(&mut vec![item.clone()]);
-                  } else if item.Type == Type::Episode || item.Type == Type::Special {
-                    if item.SeasonId.is_none() {
-                      // something's wrong. give jellyfin more time to find metadata to propagate this value.
-                      continue 'main;
-                    }
-                    pre_episode_items.append(&mut vec![item.clone()]);
+              for item in new_items {
+                raw_new_items.append(&mut vec![item.clone()]);
+                if item.Type == Type::Movie || item.Type == Type::Series {
+                  new_messages.push(vec![item.clone()]);
+                } else if item.Type == Type::Season {
+                  pre_season_items.append(&mut vec![item.clone()]);
+                } else if item.Type == Type::Episode || item.Type == Type::Special {
+                  if item.SeasonId.is_none() {
+                    // something's wrong. give jellyfin more time to find metadata to propagate this value.
+                    continue 'main;
                   }
+                  pre_episode_items.append(&mut vec![item.clone()]);
                 }
               }
 
               for season in pre_season_items.clone() {
-                if !new_items.contains(season.SeriesId.clone().unwrap()) {
-                  new_items.push(vec![season.clone()]);
+                if !new_messages.contains(season.SeriesId.clone().unwrap()) {
+                  new_messages.push(vec![season.clone()]);
                 }
               }
 
               for episode in pre_episode_items.clone() {
-                if !new_items.contains(episode.SeasonId.clone().unwrap())
-                  && !new_items.contains(episode.SeriesId.clone().unwrap())
+                if !new_messages.contains(episode.SeasonId.clone().unwrap())
+                  && !new_messages.contains(episode.SeriesId.clone().unwrap())
                 {
                   let mut inserted = false;
-                  for itemlist in new_items.iter_mut() {
+                  for itemlist in new_messages.iter_mut() {
                     if itemlist[0].SeasonId == episode.SeasonId {
                       itemlist.push(episode.clone());
                       inserted = true;
                     }
                   }
                   if !inserted {
-                    new_items.push(vec![episode.clone()]);
+                    new_messages.push(vec![episode.clone()]);
                   }
                 }
               }
@@ -192,9 +176,9 @@ impl EventHandler for Handler {
                   .then(x.IndexNumber.unwrap().cmp(&y.IndexNumber.unwrap()))
               });
 
-              new_items.reverse();
+              new_messages.reverse();
 
-              for itemlist in new_items.iter_mut() {
+              for itemlist in new_messages.iter_mut() {
                 if itemlist.len() == 1 {
                   let item = itemlist[0].clone();
                   if let Some(streams) = item.MediaStreams.clone()
@@ -218,7 +202,7 @@ impl EventHandler for Handler {
                       let mut a_languages: String = String::new();
                       let mut s_languages: String = String::new();
                       let mut scan_type: char = 'p';
-                      for x in item.MediaStreams.unwrap() {
+                      for x in item.MediaStreams.clone().unwrap() {
                         if x.Type == "Video" {
                           height = x.Height.unwrap().to_string();
                           if x.IsInterlaced {
@@ -306,22 +290,9 @@ impl EventHandler for Handler {
                     if let Err(why) = res {
                       eprintln!("Error sending message: {why:?}");
                     } else {
-                      let database = sqlx::sqlite::SqlitePoolOptions::new()
-                        .max_connections(5)
-                        .connect_with(
-                          sqlx::sqlite::SqliteConnectOptions::new()
-                            .filename("jellycord.sqlite")
-                            .create_if_missing(true),
-                        )
+                      mark_items_saved(&database, &server.user_id, &[item])
                         .await
-                        .expect("Couldn't connect to database");
-                      sqlx::query(AssertSqlSafe(format!(
-                        "INSERT INTO LIBRARY ({:?}) VALUES (\"{}\")",
-                        &server.user_id, &item.Id
-                      )))
-                      .execute(&database)
-                      .await
-                      .expect("insert error");
+                        .expect("insert error");
                     }
                   } else if item.Type == Type::Season || item.Type == Type::Series {
                     let mut ids: Vec<String> = vec![item.Id.clone()];
@@ -416,24 +387,9 @@ impl EventHandler for Handler {
                     if let Err(why) = res {
                       eprintln!("Error sending message: {why:?}");
                     } else {
-                      for x in ids {
-                        let database = sqlx::sqlite::SqlitePoolOptions::new()
-                          .max_connections(5)
-                          .connect_with(
-                            sqlx::sqlite::SqliteConnectOptions::new()
-                              .filename("jellycord.sqlite")
-                              .create_if_missing(true),
-                          )
-                          .await
-                          .expect("Couldn't connect to database");
-                        sqlx::query(AssertSqlSafe(format!(
-                          "INSERT INTO LIBRARY ({:?}) VALUES (\"{}\")",
-                          &server.user_id, &x
-                        )))
-                        .execute(&database)
+                      mark_items_saved(&database, &server.user_id, &episodes)
                         .await
                         .expect("insert error");
-                      }
                     }
                   }
                 } else {
@@ -528,24 +484,9 @@ impl EventHandler for Handler {
                   if let Err(why) = res {
                     eprintln!("Error sending message: {why:?}");
                   } else {
-                    for x in itemlist {
-                      let database = sqlx::sqlite::SqlitePoolOptions::new()
-                        .max_connections(5)
-                        .connect_with(
-                          sqlx::sqlite::SqliteConnectOptions::new()
-                            .filename("jellycord.sqlite")
-                            .create_if_missing(true),
-                        )
-                        .await
-                        .expect("Couldn't connect to database");
-                      sqlx::query(AssertSqlSafe(format!(
-                        "INSERT INTO LIBRARY ({:?}) VALUES (\"{}\")",
-                        &server.user_id, &x.Id
-                      )))
-                      .execute(&database)
+                    mark_items_saved(&database, &server.user_id, itemlist)
                       .await
                       .expect("insert error");
-                    }
                   }
                 }
               }
@@ -555,6 +496,7 @@ impl EventHandler for Handler {
               continue;
             }
           }
+          database.close().await;
           tokio::time::sleep(Duration::from_secs(300)).await;
         }
       });

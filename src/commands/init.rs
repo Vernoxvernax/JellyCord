@@ -5,7 +5,6 @@ use serenity::all::{
   ChannelType, CommandDataOption, CommandDataOptionValue, CommandOptionType, CreateCommand,
   CreateCommandOption, Permissions,
 };
-use sqlx::AssertSqlSafe;
 
 use crate::{Instance, UserList};
 
@@ -49,7 +48,7 @@ pub async fn run(options: &[CommandDataOption]) -> String {
 
   let client = Client::new();
   let users_request = client
-    .get(format!("{}/Users", &domain))
+    .get(format!("{}/Users", domain))
     .timeout(Duration::from_secs(120))
     .header("Content-Type", "application/json")
     .header("Authorization", format!("MediaBrowser Token=\"{}\"", token))
@@ -58,7 +57,7 @@ pub async fn run(options: &[CommandDataOption]) -> String {
 
   if users_request.is_err() {
     database.close().await;
-    return "The URL you've entered, seems to be of invalid format?\n- \"https://emby.yourdomain.com\"".to_string();
+    return "Couldn’t connect to the server.\nCheck that the address is valid, for example:\n- \"https://emby.yourdomain.com\"".to_string();
   }
 
   let users: Result<Vec<UserList>, String> = match users_request {
@@ -102,39 +101,14 @@ pub async fn run(options: &[CommandDataOption]) -> String {
     .is_ok()
     {
       database.close().await;
-      return "This UserID has already been added.".to_string();
+      return "There already exists a config for this channel!\nPlease /reset it first before /init -iating a new one.".to_string();
     };
 
-    // If the table already exists in the database then just rename it.
-    if sqlx::query(AssertSqlSafe(format!("SELECT {} FROM LIBRARY", user_id)))
-      .fetch_all(&database)
-      .await
-      .is_ok()
-    {
-      sqlx::query(AssertSqlSafe(format!(
-        "ALTER TABLE LIBRARY RENAME COLUMN {:?} TO \"{}_{}\"",
-        &user_id,
-        &user_id,
-        chrono::offset::Utc::now().timestamp()
-      )))
-      .execute(&database)
-      .await
-      .expect("couldn't rename database");
-    };
-
-    // Here, we can only create a new table for the database.
-    // Previously, this segment also requested and inserted the library
+    // Previously, we also requested and inserted the library
     // from jellyfin into the database, but at least on my setup the
     // request alone greatly outlives the maximum timeout for discord's
     // command response, so we just leave it empty and fill it later
     // within the loop in `main.rs`.
-    sqlx::query(AssertSqlSafe(format!(
-      "ALTER TABLE LIBRARY ADD {:?} VARCHAR(30)",
-      &user_id
-    )))
-    .execute(&database)
-    .await
-    .ok();
 
     let add = Instance {
       active_channel: 1,

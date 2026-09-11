@@ -21,14 +21,6 @@ pub async fn run(options: &[CommandDataOption]) -> String {
     },
   };
 
-  sqlx::query!(
-    "UPDATE FRONT SET Active_Channel = 0 WHERE Channel_ID=?",
-    channel_id
-  )
-  .execute(&database)
-  .await
-  .expect("pause error");
-
   match sqlx::query!(
     "SELECT Active_Channel FROM FRONT WHERE Channel_ID=?",
     channel_id

@@ -295,26 +295,26 @@ impl EventHandler for Handler {
                         .expect("insert error");
                     }
                   } else if item.Type == Type::Season || item.Type == Type::Series {
-                    let mut ids: Vec<String> = vec![item.Id.clone()];
+                    let mut new_items: Vec<Item> = vec![item.clone()];
                     let mut episodes: Vec<Item> = vec![];
 
                     if item.Type == Type::Series {
                       for season in pre_season_items.clone() {
                         if season.SeriesId.clone().unwrap() == item.Id {
-                          ids.push(season.Id.clone());
+                          new_items.push(season.clone());
                           for episode in &pre_episode_items {
                             if episode.SeasonId.clone().unwrap() == season.Id {
-                              ids.push(episode.Id.clone());
+                              new_items.push(episode.clone());
                               episodes.push(episode.clone());
                             }
                           }
                         }
                       }
                     } else {
-                      ids.push(item.Id.clone());
+                      new_items.push(item.clone());
                       for episode in &pre_episode_items {
                         if episode.SeasonId.clone().unwrap() == item.Id {
-                          ids.push(episode.Id.clone());
+                          new_items.push(episode.clone());
                           episodes.push(episode.clone());
                         }
                       }
@@ -387,7 +387,7 @@ impl EventHandler for Handler {
                     if let Err(why) = res {
                       eprintln!("Error sending message: {why:?}");
                     } else {
-                      mark_items_saved(&database, &server.user_id, &episodes)
+                      mark_items_saved(&database, &server.user_id, &new_items)
                         .await
                         .expect("insert error");
                     }
